@@ -46,6 +46,9 @@ function App() {
   const [sendDirectImage, setSendDirectImage] = useState(false);
   const [imageCaption, setImageCaption] = useState('');
   const [imageOnly, setImageOnly] = useState(false);
+  // New template parameter states
+  const [templateParameters, setTemplateParameters] = useState<string[]>([]);
+  const [parameterValues, setParameterValues] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
@@ -186,6 +189,36 @@ function App() {
         
         // Store template components for later use
         setTemplateComponents(template.components || []);
+        
+        // Extract template parameters from BODY component
+        const bodyComponent = template.components?.find((comp: any) => comp.type === 'BODY');
+        if (bodyComponent && bodyComponent.text) {
+          const paramMatches = bodyComponent.text.match(/\{\{(\d+)\}\}/g);
+          if (paramMatches) {
+            const paramNumbers = paramMatches.map((match: string) => 
+              parseInt(match.replace(/[{}]/g, ''))
+            ).sort((a: number, b: number) => a - b);
+            
+            const uniqueParams = [...new Set(paramNumbers)];
+            setTemplateParameters(uniqueParams.map(String));
+            setParameterValues(new Array(uniqueParams.length).fill(''));
+            
+            console.log('📝 Template parameters detected:', uniqueParams);
+            toast({
+              title: 'Template Parameters Detected',
+              description: `Found ${uniqueParams.length} parameter(s) that need values: ${uniqueParams.join(', ')}`,
+              status: 'info',
+              duration: 8000,
+              isClosable: true,
+            });
+          } else {
+            setTemplateParameters([]);
+            setParameterValues([]);
+          }
+        } else {
+          setTemplateParameters([]);
+          setParameterValues([]);
+        }
         
         // Automatically set the correct language
         if (template.language && template.language !== templateLanguage) {
@@ -622,6 +655,22 @@ function App() {
       return;
     }
 
+    // Validate template parameters if required
+    if (!imageOnly && templateParameters.length > 0 && !simpleMode) {
+      const emptyParams = parameterValues.filter(val => !val.trim());
+      if (emptyParams.length > 0) {
+        toast({
+          title: 'Template Parameters Required',
+          description: `Please fill in all template parameters. ${emptyParams.length} parameter(s) are empty.`,
+          status: 'error',
+          duration: 8000,
+          isClosable: true,
+        });
+        setIsLoading(false);
+        return;
+      }
+    }
+
     // Validate API configuration
     if (!phoneNumberId || phoneNumberId.length < 10) {
       toast({
@@ -722,9 +771,8 @@ function App() {
             }
           };
 
-          // For media templates, add components structure
-          if (hasMedia && templateComponents.length > 0 && !simpleMode) {
-            // Build components based on actual template structure (only when NOT in simple mode)
+          // Add template components if needed (when NOT in simple mode)
+          if (!simpleMode && templateComponents.length > 0) {
             payload.template.components = [];
             const currentImageUrl = getImageUrlForTemplate();
             
@@ -736,30 +784,21 @@ function App() {
                 // Check if this is a predefined image template
                 const hasPredefinedImage = comp.example?.header_handle?.[0];
                 
-                if (hasPredefinedImage) {
-                  console.log('📸 Template has predefined image - NOT adding components');
-                  // For predefined images, don't add any components
-                  // The template already has the image defined
-                } else {
+                if (!hasPredefinedImage && currentImageUrl) {
                   console.log('📸 Template expects dynamic image - adding image parameter');
                   console.log('📸 Using image URL:', currentImageUrl);
                   
-                  if (currentImageUrl) {
-                    // For dynamic images, add the image parameter
-                    payload.template.components.push({
-                      type: "header",
-                      parameters: [
-                        {
-                          type: "image",
-                          image: {
-                            link: currentImageUrl
-                          }
+                  payload.template.components.push({
+                    type: "header",
+                    parameters: [
+                      {
+                        type: "image",
+                        image: {
+                          link: currentImageUrl
                         }
-                      ]
-                    });
-                  } else {
-                    console.log('⚠️ No image URL provided for dynamic image template');
-                  }
+                      }
+                    ]
+                  });
                 }
               } else if (comp.type === 'HEADER' && comp.format === 'VIDEO') {
                 const hasPredefinedVideo = comp.example?.header_handle?.[0];
@@ -794,7 +833,24 @@ function App() {
               } else if (comp.type === 'BODY' && comp.text && comp.text.includes('{{')) {
                 // Handle body text with variables
                 console.log('📝 Found BODY with variables:', comp.text);
-                // You would add body parameters here if needed
+                console.log('📝 Parameter values:', parameterValues);
+                
+                if (parameterValues.length > 0 && parameterValues.some(val => val.trim())) {
+                  const bodyParameters = parameterValues
+                    .filter(val => val.trim())
+                    .map(val => ({
+                      type: "text",
+                      text: val.trim()
+                    }));
+                  
+                  if (bodyParameters.length > 0) {
+                    payload.template.components.push({
+                      type: "body",
+                      parameters: bodyParameters
+                    });
+                    console.log('📝 Added body parameters:', bodyParameters);
+                  }
+                }
               }
             });
             
@@ -803,27 +859,24 @@ function App() {
               delete payload.template.components;
               console.log('📸 No components needed - removed components array');
             }
-          } else if (hasMedia && !simpleMode) {
-            // Fallback for when we don't have template components - assume dynamic media
-            console.log('📸 No template components available - assuming dynamic media');
-            const currentImageUrl = getImageUrlForTemplate();
+          } else if (templateParameters.length > 0 && parameterValues.some(val => val.trim()) && !simpleMode) {
+            // Fallback: if we have parameters but no template components structure
+            console.log('📝 Adding body parameters without template structure');
+            const bodyParameters = parameterValues
+              .filter(val => val.trim())
+              .map(val => ({
+                type: "text",
+                text: val.trim()
+              }));
             
-            if (currentImageUrl) {
+            if (bodyParameters.length > 0) {
               payload.template.components = [
                 {
-                  type: "header",
-                  parameters: [
-                    {
-                      type: "image",
-                      image: {
-                        link: currentImageUrl
-                      }
-                    }
-                  ]
+                  type: "body",
+                  parameters: bodyParameters
                 }
               ];
-            } else {
-              console.log('⚠️ No image URL provided for media template');
+              console.log('📝 Added fallback body parameters:', bodyParameters);
             }
           }
 
@@ -879,6 +932,14 @@ function App() {
                                error.response?.data?.error?.error_user_msg ||
                                error.response?.data?.message ||
                                error.message;
+            
+            // Special handling for parameter format error
+            if (error.response?.data?.error?.code === 132012) {
+              console.log('🚨 Parameter format error detected for', number);
+              console.log('💡 This usually means template variables need values');
+              console.log('💡 Check if your template has {{1}}, {{2}}, etc. and provide parameter values');
+            }
+            
             return { 
               number, 
               success: false, 
@@ -910,6 +971,20 @@ function App() {
             description: 'Phone Number ID might be incorrect. Check your WhatsApp Business API settings.',
             status: 'error',
             duration: 10000,
+            isClosable: true,
+          });
+        }
+        
+        // Show specific error for parameter format issues
+        const hasParameterError = failedResults.some(r => 
+          r.fullError?.error?.code === 132012
+        );
+        if (hasParameterError) {
+          toast({
+            title: 'Template Parameter Error',
+            description: 'Your template has variables (like {{1}}, {{2}}) that need values. Use "Check Template Structure" and fill in the parameter values.',
+            status: 'error',
+            duration: 15000,
             isClosable: true,
           });
         }
@@ -1690,7 +1765,13 @@ function App() {
                 <FormLabel>Template Name</FormLabel>
                 <Input
                   value={templateName}
-                  onChange={(e) => setTemplateName(e.target.value)}
+                  onChange={(e) => {
+                    setTemplateName(e.target.value);
+                    // Clear template parameters when template name changes
+                    setTemplateParameters([]);
+                    setParameterValues([]);
+                    setTemplateComponents([]);
+                  }}
                   placeholder="Enter template name"
                 />
                 <FormLabel mt={3}>Template Language</FormLabel>
@@ -1712,6 +1793,54 @@ function App() {
                   <option value="ko">Korean</option>
                 </Select>
               </FormControl>
+
+              {/* Template Parameters Section */}
+              {templateParameters.length > 0 && (
+                <Box border="1px solid" borderColor="blue.200" p={4} borderRadius="md" bg="blue.50">
+                  <VStack align="stretch" spacing={4}>
+                    <Heading size="sm" color="blue.600">📝 Template Parameters</Heading>
+                    
+                    <Alert status="info" size="sm">
+                      <AlertIcon />
+                      <Box>
+                        <AlertTitle>Template Variables Detected!</AlertTitle>
+                        <AlertDescription>
+                          Your template contains {templateParameters.length} variable(s). Please provide values for each parameter.
+                        </AlertDescription>
+                      </Box>
+                    </Alert>
+
+                    <VStack align="stretch" spacing={3}>
+                      {templateParameters.map((param, index) => (
+                        <FormControl key={param} isRequired>
+                          <FormLabel>Parameter {param} ({`{{${param}}}`})</FormLabel>
+                          <Input
+                            value={parameterValues[index] || ''}
+                            onChange={(e) => {
+                              const newValues = [...parameterValues];
+                              newValues[index] = e.target.value;
+                              setParameterValues(newValues);
+                            }}
+                            placeholder={`Enter value for parameter ${param}`}
+                          />
+                          <Text fontSize="xs" color="gray.500" mt={1}>
+                            This will replace {`{{${param}}}`} in your template
+                          </Text>
+                        </FormControl>
+                      ))}
+                    </VStack>
+
+                    {parameterValues.some(val => val.trim()) && (
+                      <Alert status="success" size="sm">
+                        <AlertIcon />
+                        <AlertDescription>
+                          ✅ Parameter values provided: {parameterValues.filter(val => val.trim()).length}/{templateParameters.length}
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </VStack>
+                </Box>
+              )}
 
               <VStack align="stretch" spacing={2}>
                 <Checkbox
