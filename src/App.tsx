@@ -49,6 +49,9 @@ function App() {
   // New template parameter states
   const [templateParameters, setTemplateParameters] = useState<string[]>([]);
   const [parameterValues, setParameterValues] = useState<string[]>([]);
+  // Required media state
+  const [hasRequiredMedia, setHasRequiredMedia] = useState(false);
+  const [requiredMediaType, setRequiredMediaType] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
@@ -237,6 +240,12 @@ function App() {
           comp.type === 'HEADER' && (comp.format === 'IMAGE' || comp.format === 'VIDEO' || comp.format === 'DOCUMENT')
         );
         
+        // Check if header media is required (no predefined media)
+        const headerMediaComponent = template.components?.find((comp: any) => 
+          comp.type === 'HEADER' && (comp.format === 'IMAGE' || comp.format === 'VIDEO' || comp.format === 'DOCUMENT')
+        );
+        const hasRequiredMedia = headerMediaComponent && !headerMediaComponent.example?.header_handle?.[0];
+        
         if (hasHeaderMedia && !hasMedia) {
           setHasMedia(true);
           toast({
@@ -244,6 +253,21 @@ function App() {
             description: 'This template contains media. Checkbox has been checked automatically.',
             status: 'info',
             duration: 8000,
+            isClosable: true,
+          });
+        }
+        
+        // Store required media info
+        setHasRequiredMedia(hasRequiredMedia);
+        setRequiredMediaType(hasRequiredMedia ? headerMediaComponent.format.toLowerCase() : '');
+        
+        // Warning for required media
+        if (hasRequiredMedia) {
+          toast({
+            title: 'Required Media Detected',
+            description: `This template requires a ${headerMediaComponent.format.toLowerCase()} to be provided. Simple mode will not work with this template.`,
+            status: 'warning',
+            duration: 10000,
             isClosable: true,
           });
         }
@@ -669,6 +693,19 @@ function App() {
         setIsLoading(false);
         return;
       }
+    }
+
+    // Validate required media in simple mode
+    if (!imageOnly && simpleMode && hasRequiredMedia) {
+      toast({
+        title: 'Simple Mode Conflict',
+        description: `This template requires a ${requiredMediaType} but Simple Mode sends no components. Please disable Simple Mode and provide the required ${requiredMediaType}.`,
+        status: 'error',
+        duration: 10000,
+        isClosable: true,
+      });
+      setIsLoading(false);
+      return;
     }
 
     // Validate API configuration
@@ -1667,7 +1704,7 @@ function App() {
                 width="full"
                 size="sm"
               >
-                Check Template Structure
+                📋 Check Template Structure
               </Button>
 
               <Button
@@ -1771,6 +1808,8 @@ function App() {
                     setTemplateParameters([]);
                     setParameterValues([]);
                     setTemplateComponents([]);
+                    setHasRequiredMedia(false);
+                    setRequiredMediaType('');
                   }}
                   placeholder="Enter template name"
                 />
@@ -1855,6 +1894,14 @@ function App() {
                 >
                   🔧 Simple mode (send without components - for testing)
                 </Checkbox>
+                {simpleMode && hasRequiredMedia && (
+                  <Alert status="error" size="sm">
+                    <AlertIcon />
+                    <AlertDescription>
+                      ⚠️ Warning: Your template requires a {requiredMediaType} but Simple Mode sends no components. This will cause errors! Disable Simple Mode or switch templates.
+                    </AlertDescription>
+                  </Alert>
+                )}
                 <Text fontSize="xs" color="gray.500">
                   Check this if your template has a header with image, video, or document
                 </Text>
