@@ -1,126 +1,218 @@
-# WhatsApp Sender
+# WhatsApp Business API Message Sender
 
-A modern React application for sending bulk WhatsApp messages using the WhatsApp Business API.
+A comprehensive web application for sending WhatsApp Business API messages with advanced image support and template management.
 
-## Features
+## 🚀 Features
 
-- 📱 **Bulk Messaging**: Send messages to multiple contacts at once
-- 📁 **File Upload**: Import phone numbers from CSV/TXT files
-- 🎯 **Template Support**: Use WhatsApp approved message templates
-- 🔄 **Real-time Feedback**: Live status updates and error reporting
-- 🎨 **Modern UI**: Beautiful interface built with Chakra UI
-- 📊 **Detailed Logging**: Comprehensive error tracking and debugging
+### Core Functionality
+- **WhatsApp Business API Integration** - Complete integration with Meta's WhatsApp Business API
+- **Template Messages** - Send approved template messages with validation
+- **Direct Image Messaging** - Bypass template complexity with direct image messages
+- **Bulk Messaging** - Send to multiple recipients from CSV/TXT files
+- **Real-time Status Tracking** - Monitor message delivery status
 
-## Screenshots
+### Image Support
+- **Multiple Upload Services** - ImgBB, PostImages with automatic fallback
+- **Manual Upload Options** - Fallback to manual hosting services
+- **Image Preview** - Preview images before sending
+- **Caption Support** - Add captions to image messages (up to 1024 characters)
 
-![WhatsApp Sender Interface](screenshot.png)
+### Advanced Features
+- **Template Validation** - Check template structure and requirements
+- **Account Verification** - Verify your WhatsApp Business account status
+- **Comprehensive Diagnostics** - Debug connection and API issues
+- **Error Handling** - Detailed error messages and recovery suggestions
+- **Modern UI** - Clean, responsive interface built with Chakra UI
 
-## Prerequisites
+## 🛠️ Setup Instructions
 
-Before running this application, make sure you have:
+### Prerequisites
+- Node.js 16+ installed
+- WhatsApp Business API account
+- Access token from Meta Business
+- Phone Number ID from WhatsApp Business
 
-1. **Node.js** (v16 or higher)
-2. **WhatsApp Business Account** with API access
-3. **Access Token** from Meta Business
-4. **Phone Number ID** from your WhatsApp Business account
+### Installation
 
-## Installation
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/davidZakaria/wpcmpmessage.git
+   cd wpcmpmessage
+   ```
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/whatsapp-sender.git
-cd whatsapp-sender
-```
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
 
-2. Install dependencies:
-```bash
-npm install
-```
+3. **Start the development server**
+   ```bash
+   npm run dev
+   ```
 
-3. Start the development server:
-```bash
-npm run dev
-```
-
-4. Open your browser and navigate to `http://localhost:3000`
-
-## Usage
-
-1. **Enter Access Token**: Input your WhatsApp Business API access token
-2. **Template Name**: Enter the name of your approved WhatsApp template
-3. **Phone Numbers**: Either:
-   - Upload a CSV/TXT file with phone numbers
-   - Manually enter numbers (one per line)
-4. **Send Messages**: Click "Send Messages" to start the bulk sending process
-
-## Phone Number Format
-
-Make sure phone numbers are in international format:
-- ✅ Correct: `+1234567890`
-- ❌ Wrong: `1234567890`
-
-## Configuration
+4. **Open your browser**
+   - Navigate to `http://localhost:3000`
 
 ### WhatsApp Business API Setup
 
-1. Create a WhatsApp Business Account
-2. Set up a WhatsApp Business API
-3. Get your Phone Number ID and Access Token
-4. Create and approve message templates
+1. **Get your Access Token**
+   - Go to [Meta for Developers](https://developers.facebook.com/)
+   - Create a WhatsApp Business app
+   - Generate an access token
 
-### Environment Variables (Optional)
+2. **Get your Phone Number ID**
+   - In your WhatsApp Business app dashboard
+   - Go to API Setup → Phone Numbers
+   - Copy the Phone Number ID
 
-Create a `.env` file in the root directory:
-```env
-VITE_WHATSAPP_PHONE_ID=your_phone_number_id
-VITE_WHATSAPP_ACCESS_TOKEN=your_access_token
-```
+3. **Test your setup**
+   - Use the "Test Connection" button in the app
+   - Verify with "Find My Phone Numbers"
 
-## Scripts
+## 📱 Usage Guide
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run preview` - Preview production build
+### Basic Template Messaging
 
-## Technologies Used
+1. **Enter API credentials**
+   - Access Token
+   - Phone Number ID
 
+2. **Configure template**
+   - Template name
+   - Language (default: en_US)
+   - Check "Template contains media" if needed
+
+3. **Add recipients**
+   - Upload CSV/TXT file, or
+   - Enter phone numbers manually (international format: +1234567890)
+
+4. **Send messages**
+   - Click "Send Template Messages"
+
+### Direct Image Messaging (Recommended)
+
+1. **Enable direct images**
+   - Check "📸 Send images as direct messages"
+
+2. **Upload image**
+   - Option 1: Paste image URL directly
+   - Option 2: Upload file → Click "Upload Image"
+
+3. **Add caption** (optional)
+   - Enter caption text (max 1024 characters)
+
+4. **Choose mode**
+   - "Send image only" - Just images
+   - Leave unchecked - Both images and templates
+
+5. **Send messages**
+   - Click "📸 Send Images Only" or "🚀 Send Images + Templates"
+
+### Troubleshooting Tools
+
+- **Test Connection** - Verify API credentials
+- **Check Template Structure** - Analyze template requirements
+- **Test Direct Image Message** - Verify image sending
+- **Run Comprehensive Diagnostics** - Debug issues
+- **Check Account Verification** - Verify account status
+
+## 🎯 Image Upload Options
+
+### Automatic Upload (Recommended)
+- **ImgBB** - Primary hosting service
+- **PostImages** - Backup service
+- Automatic fallback between services
+
+### Manual Upload (Fallback)
+If automatic upload fails:
+1. Upload to any hosting service:
+   - [Imgur](https://imgur.com/)
+   - [ImgBB](https://imgbb.com/)
+   - [PostImages](https://postimages.org/)
+   - [ImageUpload](https://imageupload.io/)
+2. Copy the direct image link
+3. Paste in the "Image URL" field
+
+## 📋 File Formats
+
+### Phone Numbers
+- **CSV/TXT files** supported
+- **Format**: One number per line
+- **International format**: +1234567890
+- **Example**:
+  ```
+  +1234567890
+  +9876543210
+  +1122334455
+  ```
+
+### Images
+- **Supported formats**: PNG, JPG, GIF, WebP
+- **Maximum size**: 5MB (WhatsApp limit)
+- **Recommended**: High-quality images under 2MB
+
+## 🔧 Technical Details
+
+### Built With
 - **React 18** - Frontend framework
 - **TypeScript** - Type safety
-- **Vite** - Build tool
 - **Chakra UI** - Component library
+- **Vite** - Build tool
 - **Axios** - HTTP client
-- **WhatsApp Business API** - Messaging service
 
-## Contributing
+### API Integration
+- **WhatsApp Business API v22.0**
+- **Meta Graph API**
+- **Image hosting APIs** (ImgBB, PostImages)
+
+### Browser Support
+- Chrome 90+
+- Firefox 88+
+- Safari 14+
+- Edge 90+
+
+## 🚨 Common Issues & Solutions
+
+### Image Upload Fails
+- **Solution**: Use manual upload option
+- **Cause**: CORS restrictions or service unavailable
+- **Fix**: Upload to hosting service manually
+
+### Template Not Found
+- **Solution**: Check template name and language
+- **Cause**: Template not approved or wrong name
+- **Fix**: Use "List All Available Templates" button
+
+### Connection Failed
+- **Solution**: Verify API credentials
+- **Cause**: Invalid access token or phone number ID
+- **Fix**: Check Meta Business Manager settings
+
+### Messages Not Delivered
+- **Solution**: Check account verification status
+- **Cause**: Unverified business account
+- **Fix**: Complete WhatsApp Business verification
+
+## 📞 Support
+
+For issues or questions:
+1. Check the troubleshooting tools in the app
+2. Review the comprehensive diagnostics
+3. Verify your WhatsApp Business account status
+4. Check Meta's WhatsApp Business API documentation
+
+## 📄 License
+
+MIT License - see LICENSE file for details
+
+## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## License
+---
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-If you encounter any issues or have questions:
-
-1. Check the browser console for detailed error messages
-2. Verify your WhatsApp Business API credentials
-3. Ensure phone numbers are in the correct format
-4. Open an issue on GitHub
-
-## Roadmap
-
-- [ ] Token persistence
-- [ ] Message scheduling
-- [ ] Analytics dashboard
-- [ ] Multi-media support
-- [ ] Campaign management
-- [ ] Database integration
-
-## Disclaimer
-
-This tool is for legitimate business communication only. Make sure you comply with WhatsApp's terms of service and local regulations regarding bulk messaging. 
+**Note**: This application requires a valid WhatsApp Business API account. Free tier accounts have limitations on message volume and features. 
