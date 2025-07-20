@@ -51,4 +51,13 @@ coverage/
 
 # Temporary folders
 tmp/
-temp/ 
+temp/
+
+# WhatsApp project specific
+ngrok.exe
+*.db
+whatsapp_reports.db
+
+# SQLite databases
+*.sqlite
+*.sqlite3 
