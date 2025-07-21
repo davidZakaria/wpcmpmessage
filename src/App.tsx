@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   ChakraProvider,
   Box,
@@ -37,6 +37,13 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [lastMessageIds, setLastMessageIds] = useState<string[]>([]);
   
+  // Campaign states
+  const [campaigns, setCampaigns] = useState<any[]>([]);
+  const [selectedCampaign, setSelectedCampaign] = useState<string>('new');
+  const [campaignName, setCampaignName] = useState('');
+  const [campaignDescription, setCampaignDescription] = useState('');
+  const [campaignId, setCampaignId] = useState<number | null>(null);
+  
   // Template processing states
   const [templateParameters, setTemplateParameters] = useState<string[]>([]);
   const [parameterValues, setParameterValues] = useState<string[]>([]);
@@ -52,6 +59,79 @@ function App() {
   // Refs
   const csvFileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
+
+  // Fetch campaigns from the server
+  const fetchCampaigns = async () => {
+    try {
+      const response = await fetch('http://localhost:3001/campaigns');
+      if (response.ok) {
+        const data = await response.json();
+        setCampaigns(data);
+        console.log('Campaigns loaded:', data);
+      }
+    } catch (error) {
+      console.error('Error fetching campaigns:', error);
+    }
+  };
+
+  // Create new campaign
+  const createCampaign = async () => {
+    if (!campaignName.trim()) {
+      toast({
+        title: 'Campaign name required',
+        description: 'Please enter a campaign name',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return null;
+    }
+
+    try {
+      const response = await fetch('http://localhost:3001/campaigns', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: campaignName,
+          description: campaignDescription,
+          templateName: templateName
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setCampaignId(data.id);
+        fetchCampaigns(); // Refresh campaigns list
+        toast({
+          title: 'Campaign created',
+          description: `Campaign "${campaignName}" created with ID ${data.id}`,
+          status: 'success',
+          duration: 3000,
+          isClosable: true,
+        });
+        return data.id;
+      } else {
+        throw new Error('Failed to create campaign');
+      }
+    } catch (error) {
+      console.error('Error creating campaign:', error);
+      toast({
+        title: 'Error creating campaign',
+        description: 'Failed to create campaign. Please try again.',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return null;
+    }
+  };
+
+  // Load campaigns on component mount
+  useEffect(() => {
+    fetchCampaigns();
+  }, []);
 
   // Add these new states at the top of the App
   const [mediaId, setMediaId] = useState<string | null>(null);
@@ -336,6 +416,18 @@ function App() {
     e.preventDefault();
     setIsLoading(true);
 
+    // Handle campaign creation/selection
+    let useCampaignId = campaignId;
+    if (selectedCampaign === 'new') {
+      useCampaignId = await createCampaign();
+      if (!useCampaignId) {
+        setIsLoading(false);
+        return;
+      }
+    } else if (selectedCampaign !== 'none') {
+      useCampaignId = parseInt(selectedCampaign);
+    }
+
     // Validate inputs
     if (!accessToken || !phoneNumberId) {
       toast({
@@ -551,13 +643,14 @@ function App() {
                           id: messageId,
                           status: 'sent',
                           timestamp: Math.floor(Date.now() / 1000),
-                          recipient_id: number
+                          recipient_id: number,
+                          campaign_id: useCampaignId
                         }]
                       }
                     }]
                   }]
                 });
-                console.log(`📊 Delivery status saved for ${number}`);
+                console.log(`📊 Delivery status saved for ${number} (campaign: ${useCampaignId})`);
               } catch (dbError) {
                 console.warn('Failed to save delivery status:', dbError);
               }
@@ -583,13 +676,14 @@ function App() {
                         id: failedMessageId,
                         status: 'failed',
                         timestamp: Math.floor(Date.now() / 1000),
-                        recipient_id: number
+                        recipient_id: number,
+                        campaign_id: useCampaignId
                       }]
                     }
                   }]
                 }]
               });
-              console.log(`📊 Failed delivery status saved for ${number}`);
+              console.log(`📊 Failed delivery status saved for ${number} (campaign: ${useCampaignId})`);
             } catch (dbError) {
               console.warn('Failed to save failed delivery status:', dbError);
             }
@@ -662,6 +756,11 @@ function App() {
     setTemplateHasHeader(false);
     setTemplateHasImageHeader(false);
     setTemplateImageHeaderNeedsParams(false);
+    // Reset campaign fields
+    setSelectedCampaign('new');
+    setCampaignName('');
+    setCampaignDescription('');
+    setCampaignId(null);
   };
 
   // Test functions for debug section
@@ -1107,6 +1206,83 @@ function App() {
                 </VStack>
             </Collapse>
               </Box>
+
+          {/* Campaign Configuration */}
+          <Box border="1px solid" borderColor="purple.200" p={6} borderRadius="md" bg="purple.50">
+            <VStack spacing={4} align="stretch">
+              <Heading size="md" color="purple.600">🎯 Campaign Configuration</Heading>
+              
+              <FormControl>
+                <FormLabel>Campaign Selection</FormLabel>
+                <Select 
+                  value={selectedCampaign} 
+                  onChange={(e) => setSelectedCampaign(e.target.value)}
+                >
+                  <option value="new">➕ Create New Campaign</option>
+                  <option value="none">📤 No Campaign (Individual Messages)</option>
+                  {campaigns.map(campaign => (
+                    <option key={campaign.id} value={campaign.id}>
+                      🎯 {campaign.name} (ID: {campaign.id})
+                    </option>
+                  ))}
+                </Select>
+              </FormControl>
+              
+              {selectedCampaign === 'new' && (
+                <Box border="1px solid" borderColor="purple.200" p={4} borderRadius="md" bg="purple.100">
+                  <VStack spacing={3}>
+                    <FormControl isRequired>
+                      <FormLabel>Campaign Name</FormLabel>
+                      <Input
+                        value={campaignName}
+                        onChange={(e) => setCampaignName(e.target.value)}
+                        placeholder="Enter campaign name (e.g., 'Holiday Promotion 2024')"
+                        bg="white"
+                      />
+                    </FormControl>
+                    
+                    <FormControl>
+                      <FormLabel>Campaign Description</FormLabel>
+                      <Textarea
+                        value={campaignDescription}
+                        onChange={(e) => setCampaignDescription(e.target.value)}
+                        placeholder="Optional description of this campaign..."
+                        rows={2}
+                        bg="white"
+                      />
+                    </FormControl>
+                    
+                    <Alert status="info" size="sm">
+                      <AlertIcon />
+                      <Text fontSize="sm">
+                        Campaign will be created automatically when you send messages. You can track its progress in the Reports section.
+                      </Text>
+                    </Alert>
+                  </VStack>
+                </Box>
+              )}
+              
+              {selectedCampaign !== 'new' && selectedCampaign !== 'none' && (
+                <Box bg="purple.100" p={3} borderRadius="md">
+                  <Text fontSize="sm" fontWeight="bold" color="purple.700">
+                    📊 Selected Campaign: {campaigns.find(c => c.id.toString() === selectedCampaign)?.name}
+                  </Text>
+                  <Text fontSize="xs" color="gray.600">
+                    Messages will be added to this existing campaign for tracking.
+                  </Text>
+                </Box>
+              )}
+              
+              {selectedCampaign === 'none' && (
+                <Alert status="warning" size="sm">
+                  <AlertIcon />
+                  <Text fontSize="sm">
+                    Messages will be sent without campaign tracking. Individual message status will still be available in reports.
+                  </Text>
+                </Alert>
+              )}
+            </VStack>
+          </Box>
 
           {/* Static Image Template Info */}
           {templateHasImageHeader && !templateImageHeaderNeedsParams && (

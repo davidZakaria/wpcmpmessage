@@ -15,9 +15,20 @@ app.use(express.urlencoded({ extended: true }));
 const { Database } = sqlite3.verbose();
 const db = new Database('./whatsapp_reports.db');
 
-// Create tables if they don't exist
+// Create tables if they don't exist and handle schema migration
 db.serialize(() => {
-  // Message status table
+  // First, create campaigns table
+  db.run(`CREATE TABLE IF NOT EXISTS campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    template_name TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    total_numbers INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active'
+  )`);
+
+  // Create message_status table (original structure first)
   db.run(`CREATE TABLE IF NOT EXISTS message_status (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recipient TEXT NOT NULL,
@@ -26,6 +37,38 @@ db.serialize(() => {
     message_id TEXT,
     error TEXT
   )`);
+
+  // Check if campaign_id column exists, if not, add it
+  db.all("PRAGMA table_info(message_status)", (err, rows) => {
+    if (err) {
+      console.error('Error checking table schema:', err);
+      return;
+    }
+    
+    const hasCampaignId = rows.some(row => row.name === 'campaign_id');
+    
+    if (!hasCampaignId) {
+      console.log('Adding campaign_id column to message_status table...');
+      db.run(`ALTER TABLE message_status ADD COLUMN campaign_id INTEGER`, (err) => {
+        if (err) {
+          console.error('Error adding campaign_id column:', err);
+        } else {
+          console.log('✅ campaign_id column added successfully');
+          
+          // Create indexes after column is added
+          db.run(`CREATE INDEX IF NOT EXISTS idx_message_status_campaign ON message_status(campaign_id)`);
+          db.run(`CREATE INDEX IF NOT EXISTS idx_message_status_recipient ON message_status(recipient)`);
+          db.run(`CREATE INDEX IF NOT EXISTS idx_message_status_message_id ON message_status(message_id)`);
+        }
+      });
+    } else {
+      console.log('✅ campaign_id column already exists');
+      // Create indexes if they don't exist
+      db.run(`CREATE INDEX IF NOT EXISTS idx_message_status_campaign ON message_status(campaign_id)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_message_status_recipient ON message_status(recipient)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_message_status_message_id ON message_status(message_id)`);
+    }
+  });
 
   // Incoming messages table
   db.run(`CREATE TABLE IF NOT EXISTS incoming_messages (
@@ -58,11 +101,17 @@ app.post('/webhook', (req, res) => {
               value.statuses.forEach(status => {
                 // Store error details if present
                 const errorDetail = status.errors ? JSON.stringify(status.errors) : null;
+                
+                // Extract campaign_id from the webhook data or custom fields
+                const campaignId = status.campaign_id || 
+                                 (change.value.metadata && change.value.metadata.campaign_id) ||
+                                 null;
+                
                 // Always insert a new row for every status event
-                const insertStmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id, timestamp, error) VALUES (?, ?, ?, ?, ?)`);
-                insertStmt.run([status.recipient_id, status.status, status.id, getCorrectedTimestamp(), errorDetail]);
+                const insertStmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id, timestamp, error, campaign_id) VALUES (?, ?, ?, ?, ?, ?)`);
+                insertStmt.run([status.recipient_id, status.status, status.id, getCorrectedTimestamp(), errorDetail, campaignId]);
                 insertStmt.finalize();
-                console.log(`Inserted status event: ${status.recipient_id} - ${status.status} (message_id: ${status.id})`);
+                console.log(`Inserted status event: ${status.recipient_id} - ${status.status} (message_id: ${status.id}, campaign_id: ${campaignId})`);
               });
             }
             
@@ -113,63 +162,234 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// API endpoint to fetch reports with enhanced status tracking
+// API endpoint to fetch reports with enhanced status tracking and campaign support
 app.get('/reports', (req, res) => {
-  // Get all statuses for all messages
-  db.all(`SELECT recipient, status, message_id, timestamp, error FROM message_status ORDER BY message_id, timestamp ASC`, (err, rows) => {
+  const { campaign_id } = req.query;
+  
+  // Build query with optional campaign filter
+  let statusQuery = `SELECT recipient, status, message_id, timestamp, error, campaign_id FROM message_status`;
+  let summaryQuery = `
+    SELECT 
+      status,
+      COUNT(*) as count
+    FROM (
+      SELECT 
+        message_id,
+        status,
+        ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY 
+          CASE 
+            WHEN status = 'sent' THEN 1
+            WHEN status = 'delivered' THEN 2
+            WHEN status = 'read' THEN 3
+            WHEN status = 'failed' THEN 0
+            ELSE 0
+          END DESC, timestamp DESC
+        ) as rn
+      FROM message_status
+  `;
+  
+  const params = [];
+  if (campaign_id) {
+    statusQuery += ` WHERE campaign_id = ?`;
+    summaryQuery += ` WHERE campaign_id = ?`;
+    params.push(campaign_id);
+  }
+  
+  statusQuery += ` ORDER BY message_id, timestamp ASC`;
+  summaryQuery += `
+    ) ranked
+    WHERE rn = 1
+    GROUP BY status
+  `;
+  
+  // Get all statuses for all messages (or filtered by campaign)
+  db.all(statusQuery, params, (err, rows) => {
     if (err) {
       console.error('Database error:', err);
       res.status(500).json({ error: 'Database error' });
       return;
     }
+    
     // Group by message_id
     const messageMap = new Map();
     rows.forEach(row => {
       if (!messageMap.has(row.message_id)) {
-        messageMap.set(row.message_id, { message_id: row.message_id, recipient: row.recipient, history: [] });
+        messageMap.set(row.message_id, { 
+          message_id: row.message_id, 
+          recipient: row.recipient, 
+          campaign_id: row.campaign_id,
+          history: [] 
+        });
       }
-      messageMap.get(row.message_id).history.push({ status: row.status, timestamp: row.timestamp, error: row.error });
+      messageMap.get(row.message_id).history.push({ 
+        status: row.status, 
+        timestamp: row.timestamp, 
+        error: row.error 
+      });
     });
+    
     // Get incoming messages
     db.all('SELECT * FROM incoming_messages ORDER BY timestamp DESC', (err2, incomingRows) => {
       if (err2) {
         res.status(500).json({ error: 'Database error' });
         return;
       }
+      
       // Get status summary statistics (latest status per message)
-      db.all(`
-        SELECT 
-          status,
-          COUNT(*) as count
-        FROM (
-          SELECT 
-            message_id,
-            status,
-            ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY 
-              CASE 
-                WHEN status = 'sent' THEN 1
-                WHEN status = 'delivered' THEN 2
-                WHEN status = 'read' THEN 3
-                WHEN status = 'failed' THEN 0
-                ELSE 0
-              END DESC, timestamp DESC
-            ) as rn
-          FROM message_status
-        ) ranked
-        WHERE rn = 1
-        GROUP BY status
-      `, (err3, summaryRows) => {
+      db.all(summaryQuery, params, (err3, summaryRows) => {
         if (err3) {
           res.status(500).json({ error: 'Database error' });
           return;
         }
-        res.json({
-          deliveryStatus: Array.from(messageMap.values()),
-          incomingMessages: incomingRows,
-          summary: summaryRows,
-          totalMessages: messageMap.size,
-          totalIncoming: incomingRows.length
+        
+        // Get campaign info if filtering by campaign
+        if (campaign_id) {
+          db.get('SELECT * FROM campaigns WHERE id = ?', [campaign_id], (err4, campaign) => {
+            if (err4) {
+              res.status(500).json({ error: 'Database error' });
+              return;
+            }
+            
+            res.json({
+              deliveryStatus: Array.from(messageMap.values()),
+              incomingMessages: incomingRows,
+              summary: summaryRows,
+              totalMessages: messageMap.size,
+              totalIncoming: incomingRows.length,
+              campaign: campaign,
+              filtered: true
+            });
+          });
+        } else {
+          res.json({
+            deliveryStatus: Array.from(messageMap.values()),
+            incomingMessages: incomingRows,
+            summary: summaryRows,
+            totalMessages: messageMap.size,
+            totalIncoming: incomingRows.length,
+            filtered: false
+          });
+        }
+      });
+    });
+  });
+});
+
+// Campaign Management Endpoints
+
+// Create new campaign
+app.post('/campaigns', (req, res) => {
+  const { name, description, templateName } = req.body;
+  
+  if (!name) {
+    return res.status(400).json({ error: 'Campaign name is required' });
+  }
+  
+  const stmt = db.prepare(`INSERT INTO campaigns (name, description, template_name) VALUES (?, ?, ?)`);
+  stmt.run([name, description || null, templateName || null], function(err) {
+    if (err) {
+      console.error('Error creating campaign:', err);
+      return res.status(500).json({ error: 'Failed to create campaign' });
+    }
+    
+    res.json({
+      id: this.lastID,
+      name,
+      description,
+      templateName,
+      message: 'Campaign created successfully'
+    });
+  });
+  stmt.finalize();
+});
+
+// Get all campaigns
+app.get('/campaigns', (req, res) => {
+  db.all(`
+    SELECT 
+      c.*,
+      COUNT(DISTINCT ms.message_id) as total_messages,
+      COUNT(DISTINCT CASE WHEN ms.status = 'sent' THEN ms.message_id END) as sent_count,
+      COUNT(DISTINCT CASE WHEN ms.status = 'delivered' THEN ms.message_id END) as delivered_count,
+      COUNT(DISTINCT CASE WHEN ms.status = 'read' THEN ms.message_id END) as read_count,
+      COUNT(DISTINCT CASE WHEN ms.status = 'failed' THEN ms.message_id END) as failed_count
+    FROM campaigns c
+    LEFT JOIN message_status ms ON c.id = ms.campaign_id
+    GROUP BY c.id
+    ORDER BY c.created_at DESC
+  `, (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    res.json(rows);
+  });
+});
+
+// Get campaign details with full message status
+app.get('/campaigns/:id', (req, res) => {
+  const campaignId = req.params.id;
+  
+  // Get campaign info
+  db.get('SELECT * FROM campaigns WHERE id = ?', [campaignId], (err, campaign) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    
+    // Get all message statuses for this campaign
+    db.all(`
+      SELECT recipient, status, message_id, timestamp, error 
+      FROM message_status 
+      WHERE campaign_id = ? 
+      ORDER BY message_id, timestamp ASC
+    `, [campaignId], (err, statusRows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      // Group by message_id to create history
+      const messageMap = new Map();
+      statusRows.forEach(row => {
+        if (!messageMap.has(row.message_id)) {
+          messageMap.set(row.message_id, { 
+            message_id: row.message_id, 
+            recipient: row.recipient, 
+            history: [] 
+          });
+        }
+        messageMap.get(row.message_id).history.push({ 
+          status: row.status, 
+          timestamp: row.timestamp, 
+          error: row.error 
         });
+      });
+      
+      // Calculate statistics
+      const stats = {
+        total_numbers: messageMap.size,
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        failed: 0
+      };
+      
+      messageMap.forEach(message => {
+        const latestStatus = message.history[message.history.length - 1]?.status;
+        if (latestStatus) {
+          stats[latestStatus] = (stats[latestStatus] || 0) + 1;
+        }
+      });
+      
+      res.json({
+        campaign,
+        deliveryStatus: Array.from(messageMap.values()),
+        statistics: stats
       });
     });
   });
@@ -189,41 +409,104 @@ app.post('/clear-data', (req, res) => {
 
 // Add real delivery status for your actual phone numbers
 app.post('/add-real-status', (req, res) => {
+  const { campaignId } = req.body;
   const realNumbers = ['+201555012061', '+201022627976', '+201000400112', '+201100044025'];
-  const stmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id) VALUES (?, ?, ?)`);
+  
+  // If no campaign provided, create a test campaign
+  let useCampaignId = campaignId;
+  if (!useCampaignId) {
+    const campaignStmt = db.prepare(`INSERT INTO campaigns (name, description, template_name, total_numbers) VALUES (?, ?, ?, ?)`);
+    campaignStmt.run(['Test Campaign', 'Auto-generated test campaign', 'test_template', realNumbers.length], function(err) {
+      if (!err) {
+        useCampaignId = this.lastID;
+        console.log(`Created test campaign with ID: ${useCampaignId}`);
+      }
+    });
+    campaignStmt.finalize();
+  }
+  
+  const stmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id, campaign_id) VALUES (?, ?, ?, ?)`);
   
   realNumbers.forEach((number, index) => {
     const messageId = `msg_real_${Date.now()}_${index}`;
-    stmt.run([number, 'sent', messageId]);
+    stmt.run([number, 'sent', messageId, useCampaignId]);
     
     // Also add a delivered status for some numbers to show progression
     if (index < 2) {
       setTimeout(() => {
-        const deliveredStmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id) VALUES (?, ?, ?)`);
-        deliveredStmt.run([number, 'delivered', messageId]);
+        const deliveredStmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id, campaign_id) VALUES (?, ?, ?, ?)`);
+        deliveredStmt.run([number, 'delivered', messageId, useCampaignId]);
         deliveredStmt.finalize();
       }, 1000 * (index + 1));
+    }
+    
+    // Add read status for first number
+    if (index === 0) {
+      setTimeout(() => {
+        const readStmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id, campaign_id) VALUES (?, ?, ?, ?)`);
+        readStmt.run([number, 'read', messageId, useCampaignId]);
+        readStmt.finalize();
+      }, 3000);
     }
   });
   
   stmt.finalize();
-  res.json({ message: 'Real delivery status added successfully' });
+  res.json({ 
+    message: 'Real delivery status added successfully',
+    campaignId: useCampaignId,
+    numbersAdded: realNumbers.length
+  });
 });
 
 // Add test data endpoint (for testing purposes)
 app.post('/test-data', (req, res) => {
-  // Add test delivery status
-  const stmt1 = db.prepare(`INSERT INTO message_status (recipient, status, message_id) VALUES (?, ?, ?)`);
-  stmt1.run(['+1234567890', 'delivered', 'msg_test_123']);
-  stmt1.run(['+9876543210', 'sent', 'msg_test_456']);
-  stmt1.finalize();
+  const { campaignId } = req.body;
   
-  // Add test incoming message
-  const stmt2 = db.prepare(`INSERT INTO incoming_messages (from_number, text) VALUES (?, ?)`);
-  stmt2.run(['+1234567890', 'Hello, this is a test message']);
-  stmt2.finalize();
-  
-  res.json({ message: 'Test data added successfully' });
+  // Create a test campaign if none provided
+  if (!campaignId) {
+    const campaignStmt = db.prepare(`INSERT INTO campaigns (name, description, template_name, total_numbers) VALUES (?, ?, ?, ?)`);
+    campaignStmt.run(['Demo Campaign', 'Sample campaign for testing', 'hello_world', 2], function(err) {
+      if (err) {
+        console.error('Error creating demo campaign:', err);
+        return res.status(500).json({ error: 'Failed to create demo campaign' });
+      }
+      
+      const newCampaignId = this.lastID;
+      
+      // Add test delivery status
+      const stmt1 = db.prepare(`INSERT INTO message_status (recipient, status, message_id, campaign_id) VALUES (?, ?, ?, ?)`);
+      stmt1.run(['+1234567890', 'delivered', 'msg_test_123', newCampaignId]);
+      stmt1.run(['+9876543210', 'sent', 'msg_test_456', newCampaignId]);
+      stmt1.finalize();
+      
+      // Add test incoming message
+      const stmt2 = db.prepare(`INSERT INTO incoming_messages (from_number, text) VALUES (?, ?)`);
+      stmt2.run(['+1234567890', 'Hello, this is a test message']);
+      stmt2.finalize();
+      
+      res.json({ 
+        message: 'Test data added successfully',
+        campaignId: newCampaignId
+      });
+    });
+    campaignStmt.finalize();
+  } else {
+    // Add test delivery status to existing campaign
+    const stmt1 = db.prepare(`INSERT INTO message_status (recipient, status, message_id, campaign_id) VALUES (?, ?, ?, ?)`);
+    stmt1.run(['+1234567890', 'delivered', `msg_test_${Date.now()}_1`, campaignId]);
+    stmt1.run(['+9876543210', 'sent', `msg_test_${Date.now()}_2`, campaignId]);
+    stmt1.finalize();
+    
+    // Add test incoming message
+    const stmt2 = db.prepare(`INSERT INTO incoming_messages (from_number, text) VALUES (?, ?)`);
+    stmt2.run(['+1234567890', 'Hello, this is a test message']);
+    stmt2.finalize();
+    
+    res.json({ 
+      message: 'Test data added successfully',
+      campaignId: campaignId
+    });
+  }
 });
 
 // Real-time status endpoint for specific message
