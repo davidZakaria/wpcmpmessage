@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Box, Heading, Tabs, TabList, TabPanels, Tab, TabPanel, Table, Thead, Tbody, Tr, Th, Td, Text, Button, HStack, Alert, AlertIcon, Spinner, Badge, VStack, Stat, StatLabel, StatNumber, StatGroup, useInterval, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, Icon, useColorMode, useColorModeValue, Input, InputGroup, InputLeftElement, Flex, Select, Divider, SimpleGrid
+  Box, Heading, Tabs, TabList, TabPanels, Tab, TabPanel, Table, Thead, Tbody, Tr, Th, Td, Text, Button, HStack, Alert, AlertIcon, Badge, VStack, Stat, StatLabel, StatNumber, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, Icon, useColorMode, useColorModeValue, Input, InputGroup, InputLeftElement, Flex, Select, Divider, SimpleGrid
 } from '@chakra-ui/react';
 import React from 'react';
 import { FaExclamationCircle, FaBullhorn, FaDownload, FaEye } from 'react-icons/fa';
@@ -72,8 +72,10 @@ export default function ReportsTab() {
   const [loading, setLoading] = useState(false);
   const [campaignsLoading, setCampaignsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  // const [autoRefresh, setAutoRefresh] = useState(false); // Reserved for future use
   const [search, setSearch] = useState('');
+  
+  // Theme hooks - keep together to maintain hook order
   const { colorMode, toggleColorMode } = useColorMode();
   const cardBg = useColorModeValue('white', 'gray.800');
   const cardBorder = useColorModeValue('gray.200', 'gray.700');
@@ -96,12 +98,12 @@ export default function ReportsTab() {
       const data = await response.json();
       console.log('📊 Campaigns data received:', data);
       console.log('📊 Number of campaigns:', data.length);
-      console.log('📊 Campaign names:', data.map(c => c.name));
+      console.log('📊 Campaign names:', data.map((c: any) => c.name));
       setCampaigns(data);
       console.log('✅ Campaigns state updated');
     } catch (error) {
       console.error('❌ Error fetching campaigns:', error);
-      setError('Failed to load campaigns: ' + error.message);
+      setError('Failed to load campaigns: ' + (error as Error).message);
     } finally {
       setCampaignsLoading(false);
     }
@@ -139,16 +141,10 @@ export default function ReportsTab() {
     }
   };
 
-  // Auto-refresh every 10 seconds when enabled
-  useInterval(
-    () => {
-      if (autoRefresh) {
-        fetchReports();
-      }
-    },
-    autoRefresh ? 10000 : null
-  );
+  // Manual refresh only - removed auto-refresh for performance
+  // useInterval removed to prevent performance issues
 
+  // Ensure useEffect hooks are always called in same order
   useEffect(() => {
     fetchCampaigns();
   }, []);
@@ -177,7 +173,7 @@ export default function ReportsTab() {
     }
   };
 
-  // Filter: Only show the latest status per message_id
+  // All useMemo hooks grouped together to maintain hook order
   const latestStatuses = React.useMemo(() => {
     return reportData.deliveryStatus.map(ds => {
       const history = Array.isArray(ds.history) ? ds.history : [];
@@ -192,7 +188,6 @@ export default function ReportsTab() {
     });
   }, [reportData.deliveryStatus]);
 
-  // Compute summary from latest status
   const summaryFromLatest = React.useMemo(() => {
     const summaryMap: Record<string, number> = {};
     latestStatuses.forEach(s => {
@@ -201,7 +196,6 @@ export default function ReportsTab() {
     return summaryMap;
   }, [latestStatuses]);
 
-  // Filtered statuses by search
   const filteredStatuses = React.useMemo(() => {
     if (!search.trim()) return latestStatuses;
     const q = search.trim().toLowerCase();
@@ -212,14 +206,6 @@ export default function ReportsTab() {
     );
   }, [latestStatuses, search]);
 
-  // Helper to parse timestamps
-  function parseTimestamp(ts: string | number): string {
-    if (typeof ts === 'number') return new Date(ts * 1000).toLocaleString();
-    if (!isNaN(Number(ts)) && ts.length <= 12) return new Date(Number(ts) * 1000).toLocaleString();
-    return new Date(ts).toLocaleString();
-  }
-
-  // Calculate success rate
   const successRate = React.useMemo(() => {
     const total = latestStatuses.length;
     if (total === 0) return 0;
@@ -227,6 +213,13 @@ export default function ReportsTab() {
     const read = summaryFromLatest['read'] || 0;
     return Math.round(((delivered + read) / total) * 100);
   }, [summaryFromLatest, latestStatuses.length]);
+
+  // Helper function (not a hook)
+  function parseTimestamp(ts: string | number): string {
+    if (typeof ts === 'number') return new Date(ts * 1000).toLocaleString();
+    if (!isNaN(Number(ts)) && ts.length <= 12) return new Date(Number(ts) * 1000).toLocaleString();
+    return new Date(ts).toLocaleString();
+  }
 
   const exportToCsv = () => {
     const csvData = filteredStatuses.map(s => ({
