@@ -54,7 +54,6 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
   // Template processing states
   const [templateParameters, setTemplateParameters] = useState<string[]>([]);
   const [parameterValues, setParameterValues] = useState<string[]>([]);
-  const [templateHasHeader, setTemplateHasHeader] = useState(false);
   const [templateHasImageHeader, setTemplateHasImageHeader] = useState(false);
   const [templateImageHeaderNeedsParams, setTemplateImageHeaderNeedsParams] = useState(false);
   
@@ -185,13 +184,11 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
         const components = template.components || [];
         
         let params: string[] = [];
-        let hasHeader = false;
         let hasImageHeader = false;
         let imageHeaderNeedsParams = false;
 
         components.forEach((component: any) => {
           if (component.type === 'HEADER') {
-            hasHeader = true;
             if (component.format === 'IMAGE') {
               hasImageHeader = true;
               imageHeaderNeedsParams = component.example && 
@@ -210,7 +207,6 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
 
         setTemplateParameters(params);
         setParameterValues(new Array(params.length).fill(''));
-        setTemplateHasHeader(hasHeader);
         setTemplateHasImageHeader(hasImageHeader);
         setTemplateImageHeaderNeedsParams(imageHeaderNeedsParams);
 
@@ -224,7 +220,6 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
       } else {
         setTemplateParameters([]);
         setParameterValues([]);
-        setTemplateHasHeader(false);
         setTemplateHasImageHeader(false);
         setTemplateImageHeaderNeedsParams(false);
         
@@ -239,22 +234,47 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
       }
     } catch (error: any) {
       console.error('❌ Template API Error:', error);
-      setTemplateHasHeader(false);
+      console.error('❌ Full error response:', error.response);
       setTemplateHasImageHeader(false);
       setTemplateImageHeaderNeedsParams(false);
       
       let errorMessage = 'Failed to check template';
+      let errorTitle = 'API Error';
+      
       if (error.response?.status === 400) {
-        errorMessage = 'Invalid Phone Number ID or Access Token. Please check your credentials.';
+        const errorCode = error.response?.data?.error?.code;
+        const errorSubcode = error.response?.data?.error?.error_subcode;
+        
+        console.log('🔍 Error details:', {
+          status: error.response.status,
+          code: errorCode,
+          subcode: errorSubcode,
+          message: error.response?.data?.error?.message,
+          type: error.response?.data?.error?.type
+        });
+        
+        if (errorCode === 100) {
+          errorTitle = '🔐 WhatsApp Business Access Issue';
+          errorMessage = 'Your access token lacks WhatsApp Business permissions. Please generate a new token with whatsapp_business_messaging permission from your WhatsApp Business App in Meta Developer Console.';
+        } else if (errorCode === 190) {
+          errorTitle = '🔑 Access Token Expired';
+          errorMessage = 'Your access token has expired. Please generate a new one from Meta Developer Console.';
+        } else if (errorCode === 200) {
+          errorTitle = '📱 Phone Number Issue';
+          errorMessage = 'The Phone Number ID is incorrect or not accessible. Please verify the Phone Number ID from your WhatsApp Business Account.';
+        } else {
+          errorTitle = '❌ WhatsApp Business API Error';
+          errorMessage = `Error ${errorCode}: ${error.response?.data?.error?.message || 'Please check your WhatsApp Business setup and permissions'}`;
+        }
       } else if (error.response?.data?.error?.message) {
         errorMessage = error.response.data.error.message;
       }
       
       toast({
-        title: 'API Error',
+        title: errorTitle,
         description: errorMessage,
         status: 'error',
-        duration: 8000,
+        duration: 10000,
         isClosable: true,
       });
     }
@@ -488,7 +508,6 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
                 console.log(`📊 Delivery status saved for ${msg.number} (campaign: ${useCampaignId})`);
 
                 // ALSO save as outgoing chat message for chat center
-                const businessNumber = "+20107081505";
                 const templateText = `Template: ${templateName}` + (csvData.length > 0 ? ` (Sent to: ${msg.recipientName})` : '');
                 
                 await axios.post('http://localhost:3001/chat/send-message', {
@@ -921,14 +940,14 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
                                      limit: 50
                                    }
                                  });
-                                 const templates = response.data.data || [];
-                                 console.log('📋 All Templates:', templates);
-                                 
-                                 const templateList = templates.map((t: any) => 
-                                   `• ${t.name} (${t.language}) - Status: ${t.status}`
-                                 ).join('\n');
-                                 
-                                 toast({
+                                                                 const templates = response.data.data || [];
+                                console.log('📋 All Templates:', templates);
+                                
+                                templates.forEach((t: any) => {
+                                  console.log(`• ${t.name} (${t.language}) - Status: ${t.status}`);
+                                });
+                                
+                                toast({
                                    title: `📋 Found ${templates.length} Templates`,
                                    description: templates.length > 0 ? 
                                      'Check console for full list' : 
@@ -1002,7 +1021,7 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
                                // Step 3: Test WhatsApp Business access
                                console.log('3️⃣ Testing WhatsApp Business API access...');
                                try {
-                                 const templatesResponse = await axios.get(`https://graph.facebook.com/v22.0/${phoneNumberId}/message_templates`, {
+                                 await axios.get(`https://graph.facebook.com/v22.0/${phoneNumberId}/message_templates`, {
                                    params: { 
                                      access_token: accessToken,
                                      limit: 1
@@ -1047,7 +1066,9 @@ const CampaignsSection: React.FC<CampaignsSectionProps> = ({
                                 const requiredPerms = [
                                   'whatsapp_business_messaging',
                                   'whatsapp_business_management', 
-                                  'business_management'
+                                  'business_management',
+                                  'pages_messaging',
+                                  'pages_read_engagement'
                                 ];
                                 const missingPerms: string[] = [];
                                 requiredPerms.forEach((perm) => {

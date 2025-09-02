@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OAuth Callback</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background: linear-gradient(135deg, #1DA1F2, #14171A);
+            color: white;
+            margin: 0;
+        }
+        .container {
+            background: white;
+            color: #333;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        .success {
+            color: #1DA1F2;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #1DA1F2;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success">✅ Authentication Successful!</div>
+        <div class="spinner"></div>
+        <p>Connecting to your social media platform...</p>
+        <p><small>This window will close automatically.</small></p>
+    </div>
+
+    <script>
+        console.log('OAuth callback page loaded');
+        
+        // Get URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+        const error = urlParams.get('error');
+        const platform = window.location.pathname.split('/')[2]; // Extract platform from URL
+        
+        console.log('OAuth callback data:', { code: code ? 'received' : 'missing', state, error, platform });
+        
+        if (error) {
+            document.querySelector('.container').innerHTML = `
+                <div style="color: red; font-size: 24px; margin-bottom: 20px;">❌ OAuth Error</div>
+                <p>Error: ${error}</p>
+                <p>This window will close in 3 seconds.</p>
+            `;
+            setTimeout(() => {
+                window.close();
+            }, 3000);
+        } else if (code) {
+            // Send message to parent window
+            if (window.opener) {
+                console.log('Sending message to parent window...');
+                const message = {
+                    type: 'oauth_callback',
+                    platform: platform || 'twitter',
+                    code: code,
+                    state: state
+                };
+                
+                console.log('Sending message:', message);
+                window.opener.postMessage(message, window.location.origin);
+                
+                // Also try sending to the frontend origin
+                try {
+                    window.opener.postMessage(message, 'http://localhost:3002');
+                    console.log('Also sent to localhost:3002');
+                } catch (e) {
+                    console.log('Could not send to localhost:3002:', e);
+                }
+            } else {
+                console.log('No window.opener found');
+            }
+            
+            // Close window after delay
+            setTimeout(() => {
+                console.log('Closing OAuth popup window');
+                window.close();
+            }, 2000);
+        } else {
+            document.querySelector('.container').innerHTML = `
+                <div style="color: orange; font-size: 24px; margin-bottom: 20px;">⚠️ No Authorization Code</div>
+                <p>No authorization code was received.</p>
+                <p>This window will close in 3 seconds.</p>
+            `;
+            setTimeout(() => {
+                window.close();
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

@@ -11,7 +11,7 @@ import {
   Badge,
   HStack
 } from '@chakra-ui/react';
-import { FaChartBar, FaComments, FaBullhorn, FaCog } from 'react-icons/fa';
+import { FaChartBar, FaComments, FaBullhorn, FaShieldAlt, FaCog, FaPlay, FaTwitter } from 'react-icons/fa';
 import { ChatIcon } from '@chakra-ui/icons';
 
 interface SidebarProps {
@@ -45,6 +45,30 @@ const Sidebar: React.FC<SidebarProps> = ({ activeSection, onSectionChange, unrea
       label: 'Analytics',
       icon: FaChartBar,
       description: 'Reports & Statistics'
+    },
+    {
+      id: 'moderation',
+      label: 'Social Moderation',
+      icon: FaShieldAlt,
+      description: 'AI Content Moderation'
+    },
+    {
+      id: 'platform-testing',
+      label: 'Platform Testing',
+      icon: FaCog,
+      description: 'Test Platform Connections'
+    },
+    {
+      id: 'demo-mode',
+      label: 'Demo Mode',
+      icon: FaPlay,
+      description: 'Interactive Demo & Simulation'
+    },
+    {
+      id: 'twitter-youtube-setup',
+      label: 'Twitter & YouTube',
+      icon: FaTwitter,
+      description: 'Connect Twitter & YouTube'
     }
   ];
 

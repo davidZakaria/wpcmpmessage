@@ -2,6 +2,10 @@ import express from 'express';
 import sqlite3 from 'sqlite3';
 import cors from 'cors';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3001;
@@ -1485,12 +1489,93 @@ setInterval(() => {
   );
 }, 60 * 1000); // Run every minute
 
+// OAuth callback routes for social media platforms
+app.get('/auth/:platform/callback', (req, res) => {
+  const { platform } = req.params;
+  const { code, state, error } = req.query;
+  
+  console.log(`OAuth callback for ${platform}:`, { code: code ? 'received' : 'missing', state, error });
+  
+  if (error) {
+    console.error(`OAuth error for ${platform}:`, error);
+    return res.send(`
+      <html>
+        <head><title>OAuth Error</title></head>
+        <body>
+          <h1>Authentication Error</h1>
+          <p>Error: ${error}</p>
+          <p>Platform: ${platform}</p>
+          <script>
+            setTimeout(() => {
+              window.close();
+            }, 3000);
+          </script>
+        </body>
+      </html>
+    `);
+  }
+  
+  if (!code) {
+    return res.send(`
+      <html>
+        <head><title>OAuth Error</title></head>
+        <body>
+          <h1>Authentication Error</h1>
+          <p>No authorization code received</p>
+          <script>
+            setTimeout(() => {
+              window.close();
+            }, 3000);
+          </script>
+        </body>
+      </html>
+    `);
+  }
+  
+  // Send success page with code - the client-side will handle the token exchange
+  res.send(`
+    <html>
+      <head><title>OAuth Success</title></head>
+      <body>
+        <h1>Authentication Successful</h1>
+        <p>Connecting to ${platform}...</p>
+        <script>
+          // Post message to parent window with the authorization code
+          if (window.opener) {
+            window.opener.postMessage({
+              type: 'oauth_callback',
+              platform: '${platform}',
+              code: '${code}',
+              state: '${state}'
+            }, window.location.origin);
+          }
+          
+          // Close the popup after a short delay
+          setTimeout(() => {
+            window.close();
+          }, 2000);
+        </script>
+      </body>
+    </html>
+  `);
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    port: PORT 
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`WhatsApp Backend Server running on port ${PORT}`);
   console.log(`Webhook endpoint: http://localhost:${PORT}/webhook`);
   console.log(`Reports endpoint: http://localhost:${PORT}/reports`);
   console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`OAuth callbacks: http://localhost:${PORT}/auth/{platform}/callback`);
 });
 
 // Graceful shutdown

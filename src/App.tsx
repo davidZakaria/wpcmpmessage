@@ -22,6 +22,10 @@ import Sidebar from './Sidebar';
 const AnalyticsSection = lazy(() => import('./AnalyticsSection'));
 const ChatSection = lazy(() => import('./ChatSection'));
 const CampaignsSection = lazy(() => import('./CampaignsSection'));
+const SocialModerationSection = lazy(() => import('./SocialModerationSection'));
+const PlatformTestingSection = lazy(() => import('./PlatformTestingSection'));
+const DemoModeSection = lazy(() => import('./DemoModeSection'));
+const TwitterYouTubeSetup = lazy(() => import('./TwitterYouTubeSetup'));
 
 function App() {
   // Core app state
@@ -96,6 +100,30 @@ function App() {
         return (
           <Suspense fallback={LoadingSpinner}>
             <AnalyticsSection />
+          </Suspense>
+        );
+      case 'moderation':
+        return (
+          <Suspense fallback={LoadingSpinner}>
+            <SocialModerationSection />
+          </Suspense>
+        );
+      case 'platform-testing':
+        return (
+          <Suspense fallback={LoadingSpinner}>
+            <PlatformTestingSection />
+          </Suspense>
+        );
+      case 'demo-mode':
+        return (
+          <Suspense fallback={LoadingSpinner}>
+            <DemoModeSection />
+          </Suspense>
+        );
+      case 'twitter-youtube-setup':
+        return (
+          <Suspense fallback={LoadingSpinner}>
+            <TwitterYouTubeSetup />
           </Suspense>
         );
       default:
