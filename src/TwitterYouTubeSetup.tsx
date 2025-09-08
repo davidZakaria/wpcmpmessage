@@ -84,7 +84,75 @@ const TwitterYouTubeSetup: React.FC = () => {
 
   useEffect(() => {
     initializePlatforms();
+    
+    // Check if we just completed an OAuth flow (page was refreshed after OAuth)
+    checkForCompletedOAuth();
   }, []);
+
+  const checkForCompletedOAuth = async () => {
+    console.log('🔍 Checking URL parameters for OAuth completion...');
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const oauthSuccess = urlParams.get('oauth_success');
+    const oauthError = urlParams.get('oauth_error');
+    const code = urlParams.get('code');
+    const state = urlParams.get('state');
+    const error = urlParams.get('error');
+    
+    if (oauthSuccess && code && state) {
+      console.log(`✅ Found OAuth success in URL for ${oauthSuccess}`);
+      
+      // Clear the URL parameters
+      window.history.replaceState({}, document.title, window.location.pathname);
+      
+      try {
+        console.log(`🔄 Processing OAuth callback for ${oauthSuccess}...`);
+        const credentials = await platformAuth.handleCallback(
+          oauthSuccess,
+          code,
+          state
+        );
+        
+        console.log(`✅ OAuth credentials processed for ${oauthSuccess}:`, credentials);
+        
+        // Update platform status
+        setPlatforms(prev => prev.map(p => 
+          p.id === oauthSuccess ? { ...p, isConnected: true } : p
+        ));
+        
+        toast({
+          title: 'Connection Successful!',
+          description: `Successfully connected to ${oauthSuccess.charAt(0).toUpperCase() + oauthSuccess.slice(1)} as ${credentials.userName}`,
+          status: 'success',
+          duration: 8000,
+          isClosable: true,
+        });
+        
+      } catch (error: any) {
+        console.error(`❌ OAuth callback processing failed for ${oauthSuccess}:`, error);
+        toast({
+          title: 'OAuth Processing Error',
+          description: `Failed to complete ${oauthSuccess} connection: ${error.message}`,
+          status: 'error',
+          duration: 8000,
+          isClosable: true,
+        });
+      }
+    } else if (oauthError) {
+      console.log(`❌ Found OAuth error in URL for ${oauthError}: ${error}`);
+      
+      // Clear the URL parameters
+      window.history.replaceState({}, document.title, window.location.pathname);
+      
+      toast({
+        title: 'OAuth Error',
+        description: `Failed to connect to ${oauthError}: ${error || 'Unknown error'}`,
+        status: 'error',
+        duration: 8000,
+        isClosable: true,
+      });
+    }
+  };
 
   const initializePlatforms = () => {
     const platformSetups: PlatformSetup[] = [
@@ -228,98 +296,38 @@ const TwitterYouTubeSetup: React.FC = () => {
     try {
       const authUrl = await platformAuth.generateAuthUrl(platformId);
       
-      // Open popup window for OAuth
+      console.log(`🚀 Opening OAuth popup for ${platformId}:`, authUrl);
+
+      // Simple popup approach - let the server handle everything
       const popup = window.open(
         authUrl,
-        'oauth',
-        'width=600,height=700,scrollbars=yes,resizable=yes'
+        `oauth_${platformId}_${Date.now()}`,
+        'width=600,height=700,left=' + (screen.width / 2 - 300) + ',top=' + (screen.height / 2 - 350) + 
+        ',scrollbars=yes,resizable=yes,toolbar=no,menubar=no,location=no,status=no'
       );
 
       if (!popup) {
-        throw new Error('Popup blocked. Please allow popups for this site.');
+        throw new Error('Popup blocked. Please allow popups for this site and try again.');
       }
 
-      // Listen for OAuth callback messages
-      const handleMessage = async (event: MessageEvent) => {
-        // Only accept messages from our domain
-        if (event.origin !== window.location.origin) return;
-        
-        if (event.data.type === 'oauth_callback' && event.data.platform === platformId) {
-          console.log('OAuth callback received:', event.data);
-          window.removeEventListener('message', handleMessage);
-          
-          try {
-            // Handle the OAuth callback with the received code
-            const credentials = await platformAuth.handleCallback(
-              platformId, 
-              event.data.code, 
-              event.data.state
-            );
-            
-            console.log('OAuth credentials received:', credentials);
-            
-            // Update platform status
-            setPlatforms(prev => prev.map(p => 
-              p.id === platformId ? { ...p, isConnected: true } : p
-            ));
-            
-            toast({
-              title: 'Connection Successful',
-              description: `Successfully connected to ${platform?.name}`,
-              status: 'success',
-              duration: 3000,
-              isClosable: true,
-            });
-            
-          } catch (error: any) {
-            console.error('OAuth callback error:', error);
-            toast({
-              title: 'OAuth Error',
-              description: `Failed to complete OAuth flow: ${error.message}`,
-              status: 'error',
-              duration: 5000,
-              isClosable: true,
-            });
-          }
-        }
-      };
+      popup.focus();
 
-      // Add message listener
-      window.addEventListener('message', handleMessage);
+      toast({
+        title: 'OAuth Started',
+        description: `Complete the authorization in the popup. The page will refresh automatically when done.`,
+        status: 'info',
+        duration: 8000,
+        isClosable: true,
+      });
 
-      // Fallback: Listen for popup close
-      const checkClosed = setInterval(() => {
-        if (popup.closed) {
-          clearInterval(checkClosed);
-          window.removeEventListener('message', handleMessage);
-          
-          // Check if connection was successful (in case message was missed)
-          setTimeout(() => {
-            const isConnected = platformAuth.isConnected(platformId);
-            if (isConnected) {
-              setPlatforms(prev => prev.map(p => 
-                p.id === platformId ? { ...p, isConnected: true } : p
-              ));
-              toast({
-                title: 'Connection Successful',
-                description: `Successfully connected to ${platform?.name}`,
-                status: 'success',
-                duration: 3000,
-                isClosable: true,
-              });
-            } else {
-              console.log('OAuth popup closed without successful connection');
-              toast({
-                title: 'Connection Cancelled',
-                description: 'OAuth flow was cancelled or failed',
-                status: 'warning',
-                duration: 3000,
-                isClosable: true,
-              });
-            }
-          }, 1000);
-        }
-      }, 1000);
+      console.log('✅ OAuth popup opened. The server will handle the rest and refresh the page automatically.');
+
+      // That's it! The server callback will:
+      // 1. Process the OAuth code
+      // 2. Store the credentials
+      // 3. Close the popup
+      // 4. Refresh the parent page
+      // 5. The page refresh will detect the new connection
 
     } catch (error: any) {
       console.error('Connection error:', error);
@@ -340,6 +348,55 @@ const TwitterYouTubeSetup: React.FC = () => {
       description: 'Text has been copied to clipboard',
       status: 'success',
       duration: 2000,
+      isClosable: true,
+    });
+  };
+
+  const manualCheckConnection = (platformId: string) => {
+    console.log(`🔍 Manually checking connection for ${platformId}...`);
+    
+    // Check localStorage for OAuth success
+    const oauthResult = platformAuth.checkOAuthSuccess(platformId);
+    if (oauthResult.success) {
+      console.log('✅ Found OAuth success in localStorage');
+      toast({
+        title: 'Connection Found',
+        description: 'OAuth completion detected! Processing connection...',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+      
+      // Process the OAuth if we have the code
+      if (oauthResult.data?.code) {
+        attemptConnection(platformId);
+      }
+      return;
+    }
+    
+    // Check if already connected
+    const isConnected = platformAuth.isConnected(platformId);
+    if (isConnected) {
+      console.log('✅ Platform already connected');
+      setPlatforms(prev => prev.map(p => 
+        p.id === platformId ? { ...p, isConnected: true } : p
+      ));
+      toast({
+        title: 'Already Connected',
+        description: `${platforms.find(p => p.id === platformId)?.name} is already connected`,
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+    
+    // No connection found
+    toast({
+      title: 'No Connection Found',
+      description: 'Please try the OAuth flow again or check your browser console for errors',
+      status: 'warning',
+      duration: 5000,
       isClosable: true,
     });
   };
@@ -437,14 +494,26 @@ const TwitterYouTubeSetup: React.FC = () => {
                     </Button>
                     
                     {platform.hasCredentials ? (
-                      <Button
-                        size="sm"
-                        colorScheme="green"
-                        onClick={() => attemptConnection(platform.id)}
-                        isDisabled={platform.isConnected}
-                      >
-                        {platform.isConnected ? 'Connected' : 'Connect'}
-                      </Button>
+                      <HStack spacing={2}>
+                        <Button
+                          size="sm"
+                          colorScheme="green"
+                          onClick={() => attemptConnection(platform.id)}
+                          isDisabled={platform.isConnected}
+                        >
+                          {platform.isConnected ? 'Connected' : 'Connect'}
+                        </Button>
+                        {!platform.isConnected && (
+                          <Button
+                            size="sm"
+                            colorScheme="blue"
+                            variant="outline"
+                            onClick={() => manualCheckConnection(platform.id)}
+                          >
+                            Check
+                          </Button>
+                        )}
+                      </HStack>
                     ) : (
                       <Button
                         size="sm"

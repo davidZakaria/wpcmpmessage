@@ -1490,7 +1490,7 @@ setInterval(() => {
 }, 60 * 1000); // Run every minute
 
 // OAuth callback routes for social media platforms
-app.get('/auth/:platform/callback', (req, res) => {
+app.get('/auth/:platform/callback', async (req, res) => {
   const { platform } = req.params;
   const { code, state, error } = req.query;
   
@@ -1498,66 +1498,30 @@ app.get('/auth/:platform/callback', (req, res) => {
   
   if (error) {
     console.error(`OAuth error for ${platform}:`, error);
-    return res.send(`
-      <html>
-        <head><title>OAuth Error</title></head>
-        <body>
-          <h1>Authentication Error</h1>
-          <p>Error: ${error}</p>
-          <p>Platform: ${platform}</p>
-          <script>
-            setTimeout(() => {
-              window.close();
-            }, 3000);
-          </script>
-        </body>
-      </html>
-    `);
+    // Redirect back to main app with error
+    return res.redirect(`http://localhost:3001?oauth_error=${platform}&error=${encodeURIComponent(error)}`);
   }
   
   if (!code) {
-    return res.send(`
-      <html>
-        <head><title>OAuth Error</title></head>
-        <body>
-          <h1>Authentication Error</h1>
-          <p>No authorization code received</p>
-          <script>
-            setTimeout(() => {
-              window.close();
-            }, 3000);
-          </script>
-        </body>
-      </html>
-    `);
+    console.error(`No authorization code received for ${platform}`);
+    return res.redirect(`http://localhost:3001?oauth_error=${platform}&error=${encodeURIComponent('No authorization code received')}`);
   }
-  
-  // Send success page with code - the client-side will handle the token exchange
-  res.send(`
-    <html>
-      <head><title>OAuth Success</title></head>
-      <body>
-        <h1>Authentication Successful</h1>
-        <p>Connecting to ${platform}...</p>
-        <script>
-          // Post message to parent window with the authorization code
-          if (window.opener) {
-            window.opener.postMessage({
-              type: 'oauth_callback',
-              platform: '${platform}',
-              code: '${code}',
-              state: '${state}'
-            }, window.location.origin);
-          }
-          
-          // Close the popup after a short delay
-          setTimeout(() => {
-            window.close();
-          }, 2000);
-        </script>
-      </body>
-    </html>
-  `);
+
+  try {
+    // Process OAuth server-side
+    console.log(`🔄 Processing OAuth server-side for ${platform}...`);
+    
+    // For now, just redirect with success - the client will handle the actual token exchange
+    // This ensures the popup closes and the main page is refreshed
+    const redirectUrl = `http://localhost:3001?oauth_success=${platform}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+    console.log(`✅ Redirecting to main app with OAuth success for ${platform}`);
+    
+    return res.redirect(redirectUrl);
+    
+  } catch (error) {
+    console.error(`❌ OAuth processing failed for ${platform}:`, error);
+    return res.redirect(`http://localhost:3001?oauth_error=${platform}&error=${encodeURIComponent(error.message)}`);
+  }
 });
 
 // Health check endpoint

@@ -54,9 +54,33 @@ class PlatformAuthService {
 
   // Generate OAuth URL for platform authentication
   async generateAuthUrl(platform: string): Promise<string> {
+    console.log(`🔗 Generating OAuth URL for ${platform}...`);
+    
     const config = this.configs[platform];
     if (!config) {
+      console.error(`❌ Platform ${platform} not supported`);
       throw new Error(`Unsupported platform: ${platform}`);
+    }
+
+    if (!config.clientId) {
+      console.error(`❌ No client ID configured for ${platform}`);
+      throw new Error(`Missing client ID for ${platform}. Please check your .env file.`);
+    }
+
+    console.log(`✅ Config found for ${platform}:`, {
+      hasClientId: !!config.clientId,
+      hasClientSecret: !!config.clientSecret,
+      redirectUri: config.redirectUri,
+      scopes: config.scope
+    });
+
+    // Special logging for YouTube to help debug redirect URI issues
+    if (platform === 'youtube') {
+      console.log(`🎥 YouTube OAuth Debug:`, {
+        currentOrigin: window.location.origin,
+        fullRedirectUri: config.redirectUri,
+        expectedInGoogleConsole: 'http://localhost:3001/auth/youtube/callback'
+      });
     }
 
     const baseUrls: Record<string, string> = {
@@ -77,23 +101,53 @@ class PlatformAuthService {
 
     // Platform-specific parameters
     if (platform === 'twitter') {
+      console.log(`🔐 Generating PKCE for Twitter...`);
       // Twitter OAuth 2.0 with PKCE - use a proper code challenge
       const codeVerifier = this.generateCodeVerifier();
       const codeChallenge = await this.generateCodeChallenge(codeVerifier);
       
       // Store code verifier for later use
       sessionStorage.setItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`, codeVerifier);
+      console.log(`💾 Stored PKCE code verifier for Twitter`);
       
       params.append('code_challenge', codeChallenge);
       params.append('code_challenge_method', 'S256');
     }
 
-    return `${baseUrls[platform]}?${params.toString()}`;
+    // YouTube needs access_type=offline for refresh tokens
+    if (platform === 'youtube') {
+      params.append('access_type', 'offline');
+      params.append('prompt', 'consent');
+    }
+
+    const authUrl = `${baseUrls[platform]}?${params.toString()}`;
+    console.log(`🚀 Generated OAuth URL for ${platform}:`, {
+      baseUrl: baseUrls[platform],
+      paramCount: Array.from(params.keys()).length
+    });
+
+    return authUrl;
   }
 
   // Handle OAuth callback and exchange code for access token
   async handleCallback(platform: string, code: string, state: string): Promise<PlatformCredentials> {
-    console.log(`Handling OAuth callback for ${platform}`, { code: code ? 'present' : 'missing', state });
+    console.log(`🔄 Starting OAuth callback for ${platform}`, { 
+      code: code ? 'present' : 'missing', 
+      state,
+      hasClientId: !!this.configs[platform]?.clientId,
+      hasClientSecret: !!this.configs[platform]?.clientSecret
+    });
+    
+    // Check if we have the required configuration
+    const config = this.configs[platform];
+    if (!config.clientId || !config.clientSecret) {
+      console.error(`❌ Missing credentials for ${platform}:`, {
+        hasClientId: !!config.clientId,
+        hasClientSecret: !!config.clientSecret,
+        clientIdLength: config.clientId?.length || 0
+      });
+      throw new Error(`Missing API credentials for ${platform}. Please check your .env file.`);
+    }
     
     // For now, skip state validation to fix the loop issue
     // TODO: Fix state validation properly
@@ -101,7 +155,6 @@ class PlatformAuthService {
     //   throw new Error('Invalid state parameter');
     // }
 
-    const config = this.configs[platform];
     const tokenUrls: Record<string, string> = {
       facebook: 'https://graph.facebook.com/v18.0/oauth/access_token',
       instagram: 'https://api.instagram.com/oauth/access_token',
@@ -121,13 +174,24 @@ class PlatformAuthService {
     // Twitter uses PKCE code verifier
     if (platform === 'twitter') {
       const codeVerifier = sessionStorage.getItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`);
+      console.log(`🔑 Twitter PKCE code verifier:`, { 
+        found: !!codeVerifier,
+        length: codeVerifier?.length || 0
+      });
       if (codeVerifier) {
         tokenData.append('code_verifier', codeVerifier);
         sessionStorage.removeItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`);
+      } else {
+        console.warn(`⚠️ No PKCE code verifier found for Twitter - this may cause token exchange to fail`);
       }
     }
 
     try {
+      console.log(`🌐 Exchanging code for ${platform} token...`, {
+        tokenUrl: tokenUrls[platform],
+        redirectUri: config.redirectUri
+      });
+
       const response = await fetch(tokenUrls[platform], {
         method: 'POST',
         headers: {
@@ -137,11 +201,36 @@ class PlatformAuthService {
         body: tokenData
       });
 
+      const responseText = await response.text();
+      console.log(`📡 Token exchange response for ${platform}:`, {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        responseLength: responseText.length
+      });
+
       if (!response.ok) {
-        throw new Error(`Token exchange failed: ${response.statusText}`);
+        console.error(`❌ Token exchange failed for ${platform}:`, {
+          status: response.status,
+          statusText: response.statusText,
+          response: responseText.substring(0, 500) // First 500 chars of error
+        });
+        throw new Error(`Token exchange failed for ${platform}: ${response.status} ${response.statusText}. Response: ${responseText.substring(0, 200)}`);
       }
 
-      const data = await response.json();
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        console.log(`✅ Successfully parsed token response for ${platform}:`, {
+          hasAccessToken: !!data.access_token,
+          hasRefreshToken: !!data.refresh_token,
+          expiresIn: data.expires_in,
+          scope: data.scope
+        });
+      } catch (parseError) {
+        console.error(`❌ Failed to parse JSON response for ${platform}:`, responseText);
+        throw new Error(`Invalid JSON response from ${platform}: ${responseText.substring(0, 200)}`);
+      }
       
       const credentials: PlatformCredentials = {
         accessToken: data.access_token,
@@ -150,23 +239,39 @@ class PlatformAuthService {
         scope: data.scope?.split(' ')
       };
 
+      if (!credentials.accessToken) {
+        throw new Error(`No access token received from ${platform}`);
+      }
+
+      console.log(`👤 Getting user info for ${platform}...`);
       // Get user info
       const userInfo = await this.getUserInfo(platform, credentials.accessToken);
       credentials.userId = userInfo.id;
       credentials.userName = userInfo.name;
+      
+      console.log(`💾 Storing credentials for ${platform}:`, {
+        userId: userInfo.id,
+        userName: userInfo.name
+      });
 
       // Store credentials
       this.storeCredentials(platform, credentials);
 
+      console.log(`🎉 Successfully connected to ${platform}!`);
       return credentials;
-    } catch (error) {
-      console.error(`Failed to exchange code for ${platform}:`, error);
+    } catch (error: any) {
+      console.error(`💥 Failed to exchange code for ${platform}:`, {
+        error: error.message,
+        stack: error.stack?.substring(0, 500)
+      });
       throw error;
     }
   }
 
   // Get user information from platform
   private async getUserInfo(platform: string, accessToken: string): Promise<{id: string, name: string}> {
+    console.log(`👤 Fetching user info for ${platform}...`);
+    
     const userUrls: Record<string, string> = {
       facebook: 'https://graph.facebook.com/me?fields=id,name',
       instagram: 'https://graph.instagram.com/me?fields=id,username',
@@ -184,39 +289,86 @@ class PlatformAuthService {
     };
 
     try {
+      console.log(`🌐 Making user info request to ${platform}:`, {
+        url: userUrls[platform],
+        hasAccessToken: !!accessToken,
+        tokenLength: accessToken?.length || 0
+      });
+
       const response = await fetch(userUrls[platform], {
         headers: headers[platform]
       });
 
+      const responseText = await response.text();
+      console.log(`📡 User info response for ${platform}:`, {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        responseLength: responseText.length
+      });
+
       if (!response.ok) {
-        throw new Error(`Failed to get user info: ${response.statusText}`);
+        console.error(`❌ User info request failed for ${platform}:`, {
+          status: response.status,
+          statusText: response.statusText,
+          response: responseText.substring(0, 500)
+        });
+        throw new Error(`Failed to get user info for ${platform}: ${response.status} ${response.statusText}. Response: ${responseText.substring(0, 200)}`);
       }
 
-      const data = await response.json();
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        console.log(`✅ Successfully parsed user info for ${platform}:`, {
+          hasData: !!data,
+          keys: Object.keys(data || {})
+        });
+      } catch (parseError) {
+        console.error(`❌ Failed to parse user info JSON for ${platform}:`, responseText);
+        throw new Error(`Invalid JSON response from ${platform} user info: ${responseText.substring(0, 200)}`);
+      }
       
       // Platform-specific user info extraction
+      let userInfo;
       switch (platform) {
         case 'facebook':
         case 'instagram':
-          return { id: data.id, name: data.name || data.username };
+          userInfo = { id: data.id, name: data.name || data.username };
+          break;
         case 'twitter':
-          return { id: data.data.id, name: data.data.name };
+          userInfo = { id: data.data?.id, name: data.data?.name };
+          break;
         case 'linkedin':
-          return { 
+          userInfo = { 
             id: data.id, 
-            name: `${data.firstName.localized.en_US} ${data.lastName.localized.en_US}` 
+            name: `${data.firstName?.localized?.en_US || 'First'} ${data.lastName?.localized?.en_US || 'Last'}` 
           };
+          break;
         case 'youtube':
-          return { 
+          userInfo = { 
             id: data.items?.[0]?.id || 'unknown', 
             name: data.items?.[0]?.snippet?.title || 'YouTube Channel' 
           };
+          break;
         default:
-          return { id: data.id, name: data.name };
+          userInfo = { id: data.id, name: data.name };
       }
-    } catch (error) {
-      console.error(`Failed to get user info for ${platform}:`, error);
-      return { id: 'unknown', name: 'Unknown User' };
+
+      console.log(`👤 Extracted user info for ${platform}:`, userInfo);
+      
+      if (!userInfo.id) {
+        throw new Error(`Could not extract user ID from ${platform} response`);
+      }
+
+      return userInfo;
+    } catch (error: any) {
+      console.error(`💥 Failed to get user info for ${platform}:`, {
+        error: error.message,
+        stack: error.stack?.substring(0, 500)
+      });
+      
+      // For debugging, return the error instead of a default value
+      throw error;
     }
   }
 
@@ -226,6 +378,14 @@ class PlatformAuthService {
     localStorage.setItem(key, JSON.stringify({
       ...credentials,
       expiresAt: credentials.expiresAt?.toISOString()
+    }));
+    
+    // Also store a success flag for polling detection
+    localStorage.setItem(`${this.STORAGE_PREFIX}${platform}_oauth_success`, JSON.stringify({
+      success: true,
+      timestamp: Date.now(),
+      userId: credentials.userId,
+      userName: credentials.userName
     }));
   }
 
@@ -373,6 +533,28 @@ class PlatformAuthService {
     } catch (error) {
       console.error(`Connection test failed for ${platform}:`, error);
       return false;
+    }
+  }
+
+  // Check for OAuth success via localStorage (COOP policy workaround)
+  checkOAuthSuccess(platform: string): { success: boolean; data?: any } {
+    const key = `${this.STORAGE_PREFIX}${platform}_oauth_success`;
+    const stored = localStorage.getItem(key);
+    
+    if (!stored) {
+      return { success: false };
+    }
+    
+    try {
+      const data = JSON.parse(stored);
+      // Remove the flag after reading it
+      localStorage.removeItem(key);
+      console.log(`✅ Found OAuth success flag for ${platform}:`, data);
+      return { success: true, data };
+    } catch (error) {
+      console.error(`Failed to parse OAuth success flag for ${platform}:`, error);
+      localStorage.removeItem(key);
+      return { success: false };
     }
   }
 }
