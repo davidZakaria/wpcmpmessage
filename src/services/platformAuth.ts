@@ -23,31 +23,31 @@ class PlatformAuthService {
     facebook: {
       clientId: import.meta.env.VITE_FACEBOOK_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_FACEBOOK_CLIENT_SECRET || '',
-      redirectUri: `${window.location.origin}/auth/facebook/callback`,
+      redirectUri: `http://localhost:3002/auth/facebook/callback`,
       scope: ['pages_read_engagement', 'pages_manage_posts', 'pages_show_list']
     },
     instagram: {
       clientId: import.meta.env.VITE_INSTAGRAM_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_INSTAGRAM_CLIENT_SECRET || '',
-      redirectUri: `${window.location.origin}/auth/instagram/callback`,
+      redirectUri: `http://localhost:3002/auth/instagram/callback`,
       scope: ['user_profile', 'user_media']
     },
     twitter: {
       clientId: import.meta.env.VITE_TWITTER_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_TWITTER_CLIENT_SECRET || '',
-      redirectUri: `${window.location.origin}/auth/twitter/callback`,
+      redirectUri: `http://localhost:3002/auth/twitter/callback`,
       scope: ['tweet.read', 'users.read', 'follows.read']
     },
     linkedin: {
       clientId: import.meta.env.VITE_LINKEDIN_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_LINKEDIN_CLIENT_SECRET || '',
-      redirectUri: `${window.location.origin}/auth/linkedin/callback`,
+      redirectUri: `http://localhost:3002/auth/linkedin/callback`,
       scope: ['r_liteprofile', 'r_emailaddress', 'w_member_social']
     },
     youtube: {
       clientId: import.meta.env.VITE_YOUTUBE_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_YOUTUBE_CLIENT_SECRET || '',
-      redirectUri: `${window.location.origin}/auth/youtube/callback`,
+      redirectUri: `http://localhost:3002/auth/youtube/callback`,
       scope: ['https://www.googleapis.com/auth/youtube.readonly']
     }
   };
@@ -91,12 +91,15 @@ class PlatformAuthService {
       youtube: 'https://accounts.google.com/o/oauth2/v2/auth'
     };
 
+    // Generate state parameter
+    const state = this.generateState(platform);
+
     const params = new URLSearchParams({
       client_id: config.clientId,
       redirect_uri: config.redirectUri,
       scope: config.scope.join(' '),
       response_type: 'code',
-      state: this.generateState(platform)
+      state: state
     });
 
     // Platform-specific parameters
@@ -106,9 +109,25 @@ class PlatformAuthService {
       const codeVerifier = this.generateCodeVerifier();
       const codeChallenge = await this.generateCodeChallenge(codeVerifier);
       
-      // Store code verifier for later use
+      // Store code verifier on server for server-side token exchange
+      try {
+        const response = await fetch(`http://localhost:3002/oauth/store-verifier`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state, codeVerifier })
+        });
+        if (response.ok) {
+          console.log(`💾 Stored PKCE code verifier on server for ${platform}`);
+        } else {
+          console.error('Failed to store code verifier on server:', response.statusText);
+        }
+      } catch (error) {
+        console.error('Failed to store code verifier on server:', error);
+      }
+      
+      // Also store locally as backup
       sessionStorage.setItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`, codeVerifier);
-      console.log(`💾 Stored PKCE code verifier for Twitter`);
+      console.log(`💾 Stored PKCE code verifier for ${platform}`);
       
       params.append('code_challenge', codeChallenge);
       params.append('code_challenge_method', 'S256');
@@ -131,78 +150,44 @@ class PlatformAuthService {
 
   // Handle OAuth callback and exchange code for access token
   async handleCallback(platform: string, code: string, state: string): Promise<PlatformCredentials> {
-    console.log(`🔄 Starting OAuth callback for ${platform}`, { 
+    console.log(`🔄 Starting server-side OAuth callback for ${platform}`, { 
       code: code ? 'present' : 'missing', 
-      state,
-      hasClientId: !!this.configs[platform]?.clientId,
-      hasClientSecret: !!this.configs[platform]?.clientSecret
-    });
-    
-    // Check if we have the required configuration
-    const config = this.configs[platform];
-    if (!config.clientId || !config.clientSecret) {
-      console.error(`❌ Missing credentials for ${platform}:`, {
-        hasClientId: !!config.clientId,
-        hasClientSecret: !!config.clientSecret,
-        clientIdLength: config.clientId?.length || 0
-      });
-      throw new Error(`Missing API credentials for ${platform}. Please check your .env file.`);
-    }
-    
-    // For now, skip state validation to fix the loop issue
-    // TODO: Fix state validation properly
-    // if (!this.validateState(platform, state)) {
-    //   throw new Error('Invalid state parameter');
-    // }
-
-    const tokenUrls: Record<string, string> = {
-      facebook: 'https://graph.facebook.com/v18.0/oauth/access_token',
-      instagram: 'https://api.instagram.com/oauth/access_token',
-      twitter: 'https://api.twitter.com/2/oauth2/token',
-      linkedin: 'https://www.linkedin.com/oauth/v2/accessToken',
-      youtube: 'https://oauth2.googleapis.com/token'
-    };
-
-    const tokenData = new URLSearchParams({
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      code,
-      grant_type: 'authorization_code',
-      redirect_uri: config.redirectUri
+      state
     });
 
-    // Twitter uses PKCE code verifier
+    try {
+      // Get code verifier for Twitter PKCE
+      let codeVerifier;
     if (platform === 'twitter') {
-      const codeVerifier = sessionStorage.getItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`);
-      console.log(`🔑 Twitter PKCE code verifier:`, { 
-        found: !!codeVerifier,
-        length: codeVerifier?.length || 0
-      });
+        codeVerifier = sessionStorage.getItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`);
+        console.log(`🔑 Retrieved PKCE code verifier for Twitter:`, { 
+          found: !!codeVerifier,
+          length: codeVerifier?.length || 0
+        });
       if (codeVerifier) {
-        tokenData.append('code_verifier', codeVerifier);
         sessionStorage.removeItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`);
-      } else {
-        console.warn(`⚠️ No PKCE code verifier found for Twitter - this may cause token exchange to fail`);
       }
     }
 
-    try {
-      console.log(`🌐 Exchanging code for ${platform} token...`, {
-        tokenUrl: tokenUrls[platform],
-        redirectUri: config.redirectUri
-      });
-
-      const response = await fetch(tokenUrls[platform], {
+      console.log(`🌐 Calling server-side token exchange for ${platform}...`);
+      
+      // Call our server-side token exchange endpoint
+      const response = await fetch('http://localhost:3002/oauth/token-exchange', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
-        body: tokenData
+        body: JSON.stringify({
+          platform,
+          code,
+          state,
+          codeVerifier
+        })
       });
 
       const responseText = await response.text();
-      console.log(`📡 Token exchange response for ${platform}:`, {
+      console.log(`📡 Server token exchange response for ${platform}:`, {
         status: response.status,
         statusText: response.statusText,
         ok: response.ok,
@@ -210,55 +195,54 @@ class PlatformAuthService {
       });
 
       if (!response.ok) {
-        console.error(`❌ Token exchange failed for ${platform}:`, {
-          status: response.status,
-          statusText: response.statusText,
-          response: responseText.substring(0, 500) // First 500 chars of error
-        });
-        throw new Error(`Token exchange failed for ${platform}: ${response.status} ${response.statusText}. Response: ${responseText.substring(0, 200)}`);
+        console.error(`❌ Server token exchange failed for ${platform}:`, responseText);
+        throw new Error(`Server token exchange failed: ${response.status} ${response.statusText}`);
       }
 
       let data;
       try {
         data = JSON.parse(responseText);
-        console.log(`✅ Successfully parsed token response for ${platform}:`, {
-          hasAccessToken: !!data.access_token,
-          hasRefreshToken: !!data.refresh_token,
-          expiresIn: data.expires_in,
-          scope: data.scope
+        console.log(`✅ Successfully parsed server response for ${platform}:`, {
+          success: data.success,
+          hasCredentials: !!data.credentials,
+          hasAccessToken: !!data.credentials?.accessToken
         });
       } catch (parseError) {
-        console.error(`❌ Failed to parse JSON response for ${platform}:`, responseText);
-        throw new Error(`Invalid JSON response from ${platform}: ${responseText.substring(0, 200)}`);
+        console.error(`❌ Failed to parse server response for ${platform}:`, responseText);
+        throw new Error(`Invalid server response: ${responseText.substring(0, 200)}`);
       }
-      
+
+      if (!data.success || !data.credentials) {
+        throw new Error(`Server token exchange failed: ${data.error || 'No credentials returned'}`);
+      }
+
+      const serverCredentials = data.credentials;
       const credentials: PlatformCredentials = {
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token,
-        expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000) : undefined,
-        scope: data.scope?.split(' ')
+        accessToken: serverCredentials.accessToken,
+        refreshToken: serverCredentials.refreshToken,
+        expiresAt: serverCredentials.expiresIn ? new Date(Date.now() + serverCredentials.expiresIn * 1000) : undefined,
+        scope: serverCredentials.scope?.split(' ') || [],
+        userId: serverCredentials.userInfo?.id || serverCredentials.userInfo?.data?.[0]?.id,
+        userName: serverCredentials.userInfo?.name || serverCredentials.userInfo?.username || serverCredentials.userInfo?.data?.[0]?.name
       };
 
       if (!credentials.accessToken) {
-        throw new Error(`No access token received from ${platform}`);
+        throw new Error(`No access token received from server for ${platform}`);
       }
 
-      console.log(`👤 Getting user info for ${platform}...`);
-      // Get user info
-      const userInfo = await this.getUserInfo(platform, credentials.accessToken);
-      credentials.userId = userInfo.id;
-      credentials.userName = userInfo.name;
-      
       console.log(`💾 Storing credentials for ${platform}:`, {
-        userId: userInfo.id,
-        userName: userInfo.name
+        userId: credentials.userId,
+        userName: credentials.userName,
+        hasAccessToken: !!credentials.accessToken,
+        hasRefreshToken: !!credentials.refreshToken
       });
 
       // Store credentials
       this.storeCredentials(platform, credentials);
 
-      console.log(`🎉 Successfully connected to ${platform}!`);
+      console.log(`🎉 Successfully connected to ${platform} via server!`);
       return credentials;
+
     } catch (error: any) {
       console.error(`💥 Failed to exchange code for ${platform}:`, {
         error: error.message,
@@ -538,8 +522,12 @@ class PlatformAuthService {
 
   // Check for OAuth success via localStorage (COOP policy workaround)
   checkOAuthSuccess(platform: string): { success: boolean; data?: any } {
-    const key = `${this.STORAGE_PREFIX}${platform}_oauth_success`;
+    // Check the key used by simple-server.js
+    const key = `oauth_result_${platform}`;
     const stored = localStorage.getItem(key);
+    
+    console.log(`🔍 Checking OAuth success for ${platform} with key: ${key}`);
+    console.log(`📦 Found stored data:`, stored);
     
     if (!stored) {
       return { success: false };

@@ -87,57 +87,63 @@ const TwitterYouTubeSetup: React.FC = () => {
     
     // Check if we just completed an OAuth flow (page was refreshed after OAuth)
     checkForCompletedOAuth();
+    
+    // Listen for OAuth messages from popup windows
+    const handleMessage = async (event: MessageEvent) => {
+      console.log('📨 Message received:', event.data);
+      
+      if (event.data.type === 'oauth_success') {
+        console.log('✅ OAuth success message received:', event.data);
+        await processOAuthSuccess(event.data.platform, event.data.code, event.data.state);
+      }
+    };
+    
+    window.addEventListener('message', handleMessage);
+    
+    // Cleanup
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
   }, []);
 
   const checkForCompletedOAuth = async () => {
-    console.log('🔍 Checking URL parameters for OAuth completion...');
+    console.log('🔍 Checking for OAuth completion...');
     
+    // Method 1: Check URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const oauthSuccess = urlParams.get('oauth_success');
     const oauthError = urlParams.get('oauth_error');
-    const code = urlParams.get('code');
-    const state = urlParams.get('state');
+    const userName = urlParams.get('user');
     const error = urlParams.get('error');
     
-    if (oauthSuccess && code && state) {
+    if (oauthSuccess) {
       console.log(`✅ Found OAuth success in URL for ${oauthSuccess}`);
       
       // Clear the URL parameters
       window.history.replaceState({}, document.title, window.location.pathname);
       
-      try {
-        console.log(`🔄 Processing OAuth callback for ${oauthSuccess}...`);
-        const credentials = await platformAuth.handleCallback(
-          oauthSuccess,
-          code,
-          state
-        );
-        
-        console.log(`✅ OAuth credentials processed for ${oauthSuccess}:`, credentials);
-        
-        // Update platform status
-        setPlatforms(prev => prev.map(p => 
-          p.id === oauthSuccess ? { ...p, isConnected: true } : p
-        ));
-        
-        toast({
-          title: 'Connection Successful!',
-          description: `Successfully connected to ${oauthSuccess.charAt(0).toUpperCase() + oauthSuccess.slice(1)} as ${credentials.userName}`,
-          status: 'success',
-          duration: 8000,
-          isClosable: true,
-        });
-        
-      } catch (error: any) {
-        console.error(`❌ OAuth callback processing failed for ${oauthSuccess}:`, error);
-        toast({
-          title: 'OAuth Processing Error',
-          description: `Failed to complete ${oauthSuccess} connection: ${error.message}`,
-          status: 'error',
-          duration: 8000,
-          isClosable: true,
-        });
-      }
+      // Server has already handled token exchange and stored credentials
+      // Just update UI state and show success message
+      setPlatforms(prev => prev.map(p => 
+        p.id === oauthSuccess ? { ...p, isConnected: true } : p
+      ));
+      
+      toast({
+        title: 'Connection Successful!',
+        description: `Successfully connected to ${oauthSuccess.charAt(0).toUpperCase() + oauthSuccess.slice(1)}${userName ? ` as ${userName}` : ''}`,
+        status: 'success',
+        duration: 8000,
+        isClosable: true,
+      });
+      
+      console.log(`✅ ${oauthSuccess} connection completed successfully`);
+      
+      // Refresh page after a short delay to sync all components
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+      
+      return;
     } else if (oauthError) {
       console.log(`❌ Found OAuth error in URL for ${oauthError}: ${error}`);
       
@@ -146,7 +152,76 @@ const TwitterYouTubeSetup: React.FC = () => {
       
       toast({
         title: 'OAuth Error',
-        description: `Failed to connect to ${oauthError}: ${error || 'Unknown error'}`,
+        description: `Failed to connect to ${oauthError}: ${decodeURIComponent(error || 'Unknown error')}`,
+        status: 'error',
+        duration: 10000,
+        isClosable: true,
+      });
+      return;
+    }
+    
+    // Method 2: Check localStorage for OAuth completion
+    const platformIds = ['twitter', 'youtube', 'facebook', 'instagram', 'linkedin'];
+    
+    for (const platformId of platformIds) {
+      const storageKey = `oauth_result_${platformId}`;
+      const stored = localStorage.getItem(storageKey);
+      
+      if (stored) {
+        try {
+          const data = JSON.parse(stored);
+          console.log(`✅ Found OAuth result in localStorage for ${platformId}:`, data);
+          
+          // Remove the flag so it doesn't trigger again
+          localStorage.removeItem(storageKey);
+          
+          if (data.code && data.state) {
+            await processOAuthSuccess(platformId, data.code, data.state);
+          }
+          
+        } catch (error) {
+          console.error(`Failed to parse OAuth result data for ${platformId}:`, error);
+          localStorage.removeItem(storageKey);
+        }
+      }
+    }
+  };
+
+  const processOAuthSuccess = async (platform: string, code: string, state: string) => {
+    try {
+      console.log(`🔄 Processing OAuth callback for ${platform}...`);
+      
+      // Process the OAuth callback with platformAuth service
+      const credentials = await platformAuth.handleCallback(platform, code, state);
+      
+      console.log(`✅ OAuth credentials processed for ${platform}:`, credentials);
+      
+      // Update platform status
+      setPlatforms(prev => prev.map(p => 
+        p.id === platform ? { ...p, isConnected: true } : p
+      ));
+      
+      toast({
+        title: 'Connection Successful!',
+        description: `Successfully connected to ${platform.charAt(0).toUpperCase() + platform.slice(1)} as ${credentials.userName}`,
+        status: 'success',
+        duration: 8000,
+        isClosable: true,
+      });
+      
+      console.log(`✅ ${platform} connection completed successfully`);
+      
+      // Trigger a page refresh to sync all components
+      setTimeout(() => {
+        console.log('🔄 Refreshing page to sync all components...');
+        window.location.reload();
+      }, 2000);
+      
+    } catch (error: any) {
+      console.error(`❌ OAuth callback processing failed for ${platform}:`, error);
+      toast({
+        title: 'OAuth Processing Error',
+        description: `Failed to complete ${platform} connection: ${error.message}`,
         status: 'error',
         duration: 8000,
         isClosable: true,
@@ -311,15 +386,15 @@ const TwitterYouTubeSetup: React.FC = () => {
       }
 
       popup.focus();
-
-      toast({
+            
+            toast({
         title: 'OAuth Started',
         description: `Complete the authorization in the popup. The page will refresh automatically when done.`,
         status: 'info',
         duration: 8000,
-        isClosable: true,
-      });
-
+              isClosable: true,
+            });
+            
       console.log('✅ OAuth popup opened. The server will handle the rest and refresh the page automatically.');
 
       // That's it! The server callback will:
@@ -352,32 +427,53 @@ const TwitterYouTubeSetup: React.FC = () => {
     });
   };
 
-  const manualCheckConnection = (platformId: string) => {
+  const manualCheckConnection = async (platformId: string) => {
     console.log(`🔍 Manually checking connection for ${platformId}...`);
     
-    // Check localStorage for OAuth success
+    // Debug localStorage contents
+    const credentialsKey = `social_mod_${platformId}_credentials`;
+    const storedCredentials = localStorage.getItem(credentialsKey);
+    console.log(`📋 Stored credentials for ${platformId}:`, storedCredentials);
+    
+    // Check if already connected via platformAuth
+    const isConnected = platformAuth.isConnected(platformId);
+    console.log(`🔗 platformAuth.isConnected(${platformId}):`, isConnected);
+    
+    // Check for OAuth success flags
     const oauthResult = platformAuth.checkOAuthSuccess(platformId);
+    console.log(`📨 OAuth success check for ${platformId}:`, oauthResult);
+    console.log(`📋 OAuth success data:`, oauthResult.data);
+    
+    // Check localStorage for oauth results
+    const oauthResultKey = `oauth_result_${platformId}`;
+    const oauthResultStored = localStorage.getItem(oauthResultKey);
+    console.log(`💾 OAuth result in localStorage for ${platformId}:`, oauthResultStored);
+    
     if (oauthResult.success) {
-      console.log('✅ Found OAuth success in localStorage');
-      toast({
-        title: 'Connection Found',
-        description: 'OAuth completion detected! Processing connection...',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-      
-      // Process the OAuth if we have the code
-      if (oauthResult.data?.code) {
-        attemptConnection(platformId);
+      console.log('✅ Found OAuth success, processing...');
+      if (oauthResult.data?.code && oauthResult.data?.state) {
+        console.log('🔄 Processing OAuth with code and state...');
+        await processOAuthSuccess(platformId, oauthResult.data.code, oauthResult.data.state);
+      } else {
+        console.log('⚠️ OAuth success found but missing code/state:', oauthResult.data);
       }
       return;
     }
     
-    // Check if already connected
-    const isConnected = platformAuth.isConnected(platformId);
+    if (oauthResultStored) {
+      console.log('✅ Found OAuth result in localStorage, processing...');
+      try {
+        const data = JSON.parse(oauthResultStored);
+        localStorage.removeItem(oauthResultKey);
+        processOAuthSuccess(platformId, data.code, data.state);
+        return;
+      } catch (e) {
+        console.error('Failed to parse OAuth result:', e);
+      }
+    }
+    
     if (isConnected) {
-      console.log('✅ Platform already connected');
+      console.log('✅ Platform already connected, updating UI');
       setPlatforms(prev => prev.map(p => 
         p.id === platformId ? { ...p, isConnected: true } : p
       ));
@@ -392,9 +488,10 @@ const TwitterYouTubeSetup: React.FC = () => {
     }
     
     // No connection found
+    console.log('❌ No connection found');
     toast({
       title: 'No Connection Found',
-      description: 'Please try the OAuth flow again or check your browser console for errors',
+      description: 'Please try the OAuth flow again. Check browser console for details.',
       status: 'warning',
       duration: 5000,
       isClosable: true,
@@ -495,14 +592,14 @@ const TwitterYouTubeSetup: React.FC = () => {
                     
                     {platform.hasCredentials ? (
                       <HStack spacing={2}>
-                        <Button
-                          size="sm"
-                          colorScheme="green"
-                          onClick={() => attemptConnection(platform.id)}
-                          isDisabled={platform.isConnected}
-                        >
-                          {platform.isConnected ? 'Connected' : 'Connect'}
-                        </Button>
+                      <Button
+                        size="sm"
+                        colorScheme="green"
+                        onClick={() => attemptConnection(platform.id)}
+                        isDisabled={platform.isConnected}
+                      >
+                        {platform.isConnected ? 'Connected' : 'Connect'}
+                      </Button>
                         {!platform.isConnected && (
                           <Button
                             size="sm"

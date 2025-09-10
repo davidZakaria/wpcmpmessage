@@ -1764,7 +1764,7 @@ function createSuccessPage(platform, code, state) {
 function createErrorPage(platform, error) {
   return `
     <!DOCTYPE html>
-    <html>
+      <html>
       <head>
         <title>OAuth Error</title>
         <meta charset="utf-8">
@@ -1790,7 +1790,7 @@ function createErrorPage(platform, error) {
           .error-icon { font-size: 64px; margin-bottom: 20px; }
         </style>
       </head>
-      <body>
+        <body>
         <div class="container">
           <div class="error-icon">❌</div>
           <h1>Authorization Failed</h1>
@@ -1798,12 +1798,12 @@ function createErrorPage(platform, error) {
           <p>Error: ${error}</p>
           <p>This window will close automatically.</p>
         </div>
-        <script>
+          <script>
           console.log('❌ OAuth error page loaded for ${platform}:', '${error}');
           
           // Try to redirect parent to main app with error
           try {
-          if (window.opener) {
+            if (window.opener) {
               const redirectUrl = 'http://localhost:3001?oauth_error=${platform}&error=${encodeURIComponent(error)}';
               window.opener.location.href = redirectUrl;
               console.log('🔄 Redirected parent with error');
@@ -1813,16 +1813,16 @@ function createErrorPage(platform, error) {
           }
           
           // Close window
-          setTimeout(() => {
+            setTimeout(() => {
             try {
-            window.close();
+              window.close();
             } catch (e) {
               window.location.href = 'http://localhost:3001?oauth_error=${platform}&error=${encodeURIComponent(error)}';
             }
             }, 3000);
-        </script>
-      </body>
-    </html>
+          </script>
+        </body>
+      </html>
   `;
 }
 
@@ -1852,11 +1852,369 @@ app.get('/auth/:platform/callback', (req, res) => {
   res.send(createSuccessPage(platform, code, state));
 });
 
-// Helper functions for OAuth callback pages (already defined above)
+// Helper functions for OAuth callback pages
+function createErrorPage(platform, error) {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head><title>OAuth Error</title></head>
+      <body style="font-family: Arial; text-align: center; padding: 50px; background: #ff6b6b; color: white;">
+        <h1>❌ Authorization Failed</h1>
+        <p>Platform: ${platform}</p>
+        <p>Error: ${error}</p>
+        <script>
+          try {
+            if (window.opener && !window.opener.closed) {
+              window.opener.location.href = 'http://localhost:3001?oauth_error=${platform}&error=${encodeURIComponent(error)}';
+            }
+          } catch (e) {
+            console.log('⚠️ Redirect failed:', e);
+          }
+          setTimeout(() => window.close(), 2000);
+        </script>
+      </body>
+    </html>
+  `;
+}
 
-// createSuccessPage function already defined above
+function createSuccessPage(platform, code, state) {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>OAuth Success</title>
+        <meta charset="utf-8">
+      </head>
+      <body style="font-family: Arial; text-align: center; padding: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+        <h1>✅ Authorization Successful!</h1>
+        <p>Successfully authorized ${platform}</p>
+        <p>Processing and closing window...</p>
+        <script>
+          console.log('🎉 OAuth success for ${platform}');
+          
+          const oauthData = {
+            type: 'oauth_success',
+            platform: '${platform}',
+            code: '${code}',
+            state: '${state}',
+            timestamp: Date.now()
+          };
+          
+          // Store in localStorage for frontend to process
+          try {
+            localStorage.setItem('oauth_result_${platform}', JSON.stringify(oauthData));
+            console.log('💾 Stored OAuth result in localStorage');
+          } catch (e) {
+            console.log('⚠️ Storage failed:', e);
+          }
+          
+          // Redirect parent to show success
+          try {
+            if (window.opener && !window.opener.closed) {
+              const url = 'http://localhost:3001?oauth_success=${platform}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}';
+              window.opener.location.href = url;
+              console.log('🔄 Redirected parent');
+            }
+          } catch (e) {
+            console.log('⚠️ Redirect failed:', e);
+          }
+          
+          // Close window
+          setTimeout(() => {
+            console.log('🔚 Closing window');
+            try {
+              window.close();
+            } catch (e) {
+              // If can't close, redirect this window
+              window.location.href = 'http://localhost:3001?oauth_success=${platform}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}';
+            }
+          }, 1500);
+        </script>
+      </body>
+    </html>
+  `;
+}
 
 // Note: codeVerifiers Map already declared at the top of the file
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    port: PORT 
+  });
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`WhatsApp Backend Server running on port ${PORT}`);
+  console.log(`Webhook endpoint: http://localhost:${PORT}/webhook`);
+  console.log(`Reports endpoint: http://localhost:${PORT}/reports`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`OAuth callbacks: http://localhost:${PORT}/auth/{platform}/callback`);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\nShutting down server...');
+  db.close((err) => {
+    if (err) {
+      console.error('Error closing database:', err);
+    } else {
+      console.log('Database connection closed.');
+    }
+    process.exit(0);
+  });
+});
+      throw new Error(`No OAuth configuration found for ${platform}`);
+    }
+
+    let tokenData;
+    let tokenUrl;
+    let codeVerifier = null;
+
+    if (platform === 'twitter') {
+      tokenUrl = 'https://api.twitter.com/2/oauth2/token';
+      
+      // Get the code verifier for this state
+      codeVerifier = codeVerifiers.get(state);
+      if (!codeVerifier) {
+        throw new Error('PKCE code verifier not found for this OAuth state');
+      }
+      
+      tokenData = new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: config.clientId,
+        redirect_uri: config.redirectUri,
+        code: code,
+        code_verifier: codeVerifier
+      });
+      
+      // Clean up the code verifier
+      codeVerifiers.delete(state);
+      
+    } else if (platform === 'youtube') {
+      tokenUrl = 'https://oauth2.googleapis.com/token';
+      tokenData = new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        redirect_uri: config.redirectUri,
+        code: code
+      });
+    } else {
+      throw new Error(`Token exchange not implemented for ${platform}`);
+    }
+
+    console.log(`🌐 Exchanging code for ${platform} token...`);
+    console.log(`📋 Token exchange details:`, {
+      url: tokenUrl,
+      clientId: config.clientId ? `${config.clientId.substring(0, 10)}...` : 'MISSING',
+      clientSecret: config.clientSecret ? 'PROVIDED' : 'MISSING',
+      redirectUri: config.redirectUri,
+      codeLength: code.length,
+      hasCodeVerifier: platform === 'twitter' ? !!codeVerifier : 'N/A'
+    });
+    
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: tokenData
+    });
+
+    const responseText = await response.text();
+    console.log(`📡 Token exchange response for ${platform}:`, {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok,
+      responseLength: responseText.length,
+      responsePreview: responseText.substring(0, 200)
+    });
+
+    if (!response.ok) {
+      console.error(`Token exchange failed for ${platform}:`, responseText);
+      return { success: false, error: `Token exchange failed: ${response.status} ${response.statusText}` };
+    }
+
+    const tokenResponse = JSON.parse(responseText);
+    
+    // Get user information
+    const userInfo = await getUserInfo(platform, tokenResponse.access_token);
+    
+    const credentials = {
+      accessToken: tokenResponse.access_token,
+      refreshToken: tokenResponse.refresh_token,
+      expiresAt: tokenResponse.expires_in ? new Date(Date.now() + tokenResponse.expires_in * 1000) : null,
+      userId: userInfo.id,
+      userName: userInfo.name,
+      scope: tokenResponse.scope ? tokenResponse.scope.split(' ') : []
+    };
+
+    return { success: true, credentials };
+
+  } catch (error) {
+    console.error(`❌ Token exchange error for ${platform}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Function to get user information
+async function getUserInfo(platform, accessToken) {
+  try {
+    let userUrl;
+    let headers = { 'Authorization': `Bearer ${accessToken}` };
+
+    if (platform === 'twitter') {
+      userUrl = 'https://api.twitter.com/2/users/me';
+    } else if (platform === 'youtube') {
+      userUrl = 'https://www.googleapis.com/oauth2/v2/userinfo';
+    } else {
+      throw new Error(`User info not implemented for ${platform}`);
+    }
+
+    const response = await fetch(userUrl, { headers });
+    const userData = await response.json();
+
+    if (platform === 'twitter') {
+      return { id: userData.data.id, name: userData.data.name || userData.data.username };
+    } else if (platform === 'youtube') {
+      return { id: userData.id, name: userData.name };
+    }
+
+  } catch (error) {
+    console.error(`Failed to get user info for ${platform}:`, error);
+    return { id: 'unknown', name: 'Unknown User' };
+  }
+}
+
+// Function to get OAuth configuration
+function getOAuthConfig(platform) {
+  const configs = {
+    twitter: {
+      clientId: process.env.VITE_TWITTER_CLIENT_ID,
+      clientSecret: process.env.VITE_TWITTER_CLIENT_SECRET,
+      redirectUri: `http://localhost:3002/auth/twitter/callback`
+    },
+    youtube: {
+      clientId: process.env.VITE_YOUTUBE_CLIENT_ID,
+      clientSecret: process.env.VITE_YOUTUBE_CLIENT_SECRET,
+      redirectUri: `http://localhost:3002/auth/youtube/callback`
+    }
+  };
+
+  const config = configs[platform];
+  if (config) {
+    console.log(`🔑 OAuth config for ${platform}:`, {
+      hasClientId: !!config.clientId,
+      hasClientSecret: !!config.clientSecret,
+      clientIdPreview: config.clientId ? `${config.clientId.substring(0, 10)}...` : 'MISSING',
+      redirectUri: config.redirectUri
+    });
+  }
+
+  return config;
+}
+
+// Function to send success page
+function sendSuccessPage(res, platform, credentials) {
+  res.send(`
+    <html>
+        <head>
+          <title>OAuth Success</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              min-height: 100vh;
+              margin: 0;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              color: white;
+              text-align: center;
+            }
+            .container {
+              padding: 40px;
+              background: rgba(255,255,255,0.1);
+              border-radius: 15px;
+              backdrop-filter: blur(10px);
+            }
+            .success-icon {
+              font-size: 64px;
+              margin-bottom: 20px;
+            }
+          </style>
+        </head>
+      <body>
+          <div class="container">
+            <div class="success-icon">✅</div>
+            <h1>Authorization Successful!</h1>
+            <p>Connected to ${platform} as ${credentials.userName}</p>
+            <p>This window will close automatically.</p>
+          </div>
+        <script>
+            console.log('✅ OAuth completed for ${platform}');
+            console.log('👤 Connected as: ${credentials.userName}');
+            
+            // Try to communicate with parent window
+            const oauthData = {
+              type: 'oauth_success',
+              platform: '${platform}',
+              credentials: ${JSON.stringify(credentials)},
+              timestamp: Date.now()
+            };
+            
+            // Method 1: Try to send message to opener window
+            if (window.opener && !window.opener.closed) {
+              try {
+                console.log('📤 Sending OAuth success to opener window');
+                window.opener.postMessage(oauthData, '*');
+                
+                // Also try to redirect the opener
+                const redirectUrl = 'http://localhost:3001?oauth_success=${platform}&user=${encodeURIComponent(credentials.userName)}';
+                window.opener.location.href = redirectUrl;
+                console.log('🔄 Redirected opener to main app');
+              } catch (e) {
+                console.log('⚠️ Could not communicate with opener:', e.message);
+              }
+            }
+            
+            // Method 2: Store in localStorage for detection
+            try {
+              const storageKey = 'oauth_completion_${platform}';
+              localStorage.setItem(storageKey, JSON.stringify(oauthData));
+              console.log('💾 Stored OAuth data in localStorage');
+            } catch (e) {
+              console.log('⚠️ Could not store in localStorage:', e.message);
+            }
+            
+            // Method 3: Close this popup after a delay
+          setTimeout(() => {
+              console.log('🔚 Closing OAuth popup');
+              try {
+            window.close();
+              } catch (e) {
+                console.log('Could not close window:', e.message);
+              }
+            }, 3000);
+            
+            // Method 4: If we can't close, redirect this window
+            setTimeout(() => {
+              if (!window.closed) {
+                console.log('🔄 Redirecting this window to main app');
+                const redirectUrl = 'http://localhost:3001?oauth_success=${platform}&user=${encodeURIComponent(credentials.userName)}';
+                window.location.href = redirectUrl;
+              }
+            }, 5000);
+        </script>
+      </body>
+    </html>
+  `);
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
