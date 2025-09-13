@@ -29,6 +29,7 @@ const TwitterYouTubeSetup = lazy(() => import('./TwitterYouTubeSetup'));
 
 function App() {
   // Core app state
+  const [activeHub, setActiveHub] = useState('whatsapp'); // 'whatsapp' or 'social'
   const [activeSection, setActiveSection] = useState('chat');
   const [accessToken, setAccessToken] = useState('');
   const [phoneNumberId, setPhoneNumberId] = useState('725999993024554');
@@ -69,9 +70,26 @@ function App() {
     }
   }, [phoneNumberId]);
 
+  // Handle hub changes
+  const handleHubChange = (hub: string) => {
+    setActiveHub(hub);
+    // Set default section for each hub
+    if (hub === 'whatsapp') {
+      setActiveSection('chat');
+    } else if (hub === 'social') {
+      setActiveSection('moderation');
+    }
+  };
+
   // Handle section changes
   const handleSectionChange = (section: string) => {
     setActiveSection(section);
+    // Auto-switch hub based on section
+    if (['chat', 'campaigns', 'analytics'].includes(section)) {
+      setActiveHub('whatsapp');
+    } else if (['moderation', 'platform-testing', 'twitter-youtube-setup', 'demo-mode'].includes(section)) {
+      setActiveHub('social');
+    }
   };
 
   // Render the active section with lazy loading
@@ -140,7 +158,9 @@ function App() {
       <Flex h="100vh" overflow="hidden">
         {/* Sidebar */}
         <Sidebar 
+          activeHub={activeHub}
           activeSection={activeSection}
+          onHubChange={handleHubChange}
           onSectionChange={handleSectionChange}
           unreadCount={unreadCount}
         />

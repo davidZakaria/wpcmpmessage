@@ -90,7 +90,13 @@ const TwitterYouTubeSetup: React.FC = () => {
     
     // Listen for OAuth messages from popup windows
     const handleMessage = async (event: MessageEvent) => {
-      console.log('📨 Message received:', event.data);
+      console.log('📨 Message received from:', event.origin, event.data);
+      
+      // Only accept messages from our server
+      if (event.origin !== 'http://localhost:3002') {
+        console.log('🚫 Ignoring message from unknown origin:', event.origin);
+        return;
+      }
       
       if (event.data.type === 'oauth_success') {
         console.log('✅ OAuth success message received:', event.data);
@@ -108,33 +114,32 @@ const TwitterYouTubeSetup: React.FC = () => {
 
   const checkForCompletedOAuth = async () => {
     console.log('🔍 Checking for OAuth completion...');
+    console.log('🔍 Current URL:', window.location.href);
     
     // Method 1: Check URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const oauthSuccess = urlParams.get('oauth_success');
     const oauthError = urlParams.get('oauth_error');
-    const userName = urlParams.get('user');
+    const code = urlParams.get('code');
+    const state = urlParams.get('state');
     const error = urlParams.get('error');
     
-    if (oauthSuccess) {
-      console.log(`✅ Found OAuth success in URL for ${oauthSuccess}`);
+    console.log('🔍 URL parameters found:', {
+      oauthSuccess,
+      oauthError,
+      hasCode: !!code,
+      hasState: !!state,
+      error
+    });
+    
+    if (oauthSuccess && code && state) {
+      console.log(`✅ Found OAuth success in URL for ${oauthSuccess} with code and state`);
       
       // Clear the URL parameters
       window.history.replaceState({}, document.title, window.location.pathname);
       
-      // Server has already handled token exchange and stored credentials
-      // Just update UI state and show success message
-      setPlatforms(prev => prev.map(p => 
-        p.id === oauthSuccess ? { ...p, isConnected: true } : p
-      ));
-      
-      toast({
-        title: 'Connection Successful!',
-        description: `Successfully connected to ${oauthSuccess.charAt(0).toUpperCase() + oauthSuccess.slice(1)}${userName ? ` as ${userName}` : ''}`,
-        status: 'success',
-        duration: 8000,
-        isClosable: true,
-      });
+      // Process the OAuth callback to actually exchange the code for tokens
+      await processOAuthSuccess(oauthSuccess, code, state);
       
       console.log(`✅ ${oauthSuccess} connection completed successfully`);
       
@@ -189,12 +194,31 @@ const TwitterYouTubeSetup: React.FC = () => {
 
   const processOAuthSuccess = async (platform: string, code: string, state: string) => {
     try {
-      console.log(`🔄 Processing OAuth callback for ${platform}...`);
-      
+      console.log(`🔄 Processing OAuth callback for ${platform}:`, { 
+        code: code.substring(0, 20) + '...', 
+        state,
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`🔍 Before handleCallback - checking current connection status:`, {
+        isConnected: platformAuth.isConnected(platform),
+        hasCredentials: !!platformAuth.getCredentials(platform)
+      });
+
       // Process the OAuth callback with platformAuth service
       const credentials = await platformAuth.handleCallback(platform, code, state);
       
-      console.log(`✅ OAuth credentials processed for ${platform}:`, credentials);
+      console.log(`✅ OAuth credentials processed for ${platform}:`, {
+        hasCredentials: !!credentials,
+        userId: credentials?.userId,
+        userName: credentials?.userName,
+        hasAccessToken: !!credentials?.accessToken
+      });
+
+      console.log(`🔍 After handleCallback - checking connection status:`, {
+        isConnected: platformAuth.isConnected(platform),
+        hasCredentials: !!platformAuth.getCredentials(platform)
+      });
       
       // Update platform status
       setPlatforms(prev => prev.map(p => 
@@ -219,6 +243,10 @@ const TwitterYouTubeSetup: React.FC = () => {
       
     } catch (error: any) {
       console.error(`❌ OAuth callback processing failed for ${platform}:`, error);
+      console.error(`❌ Error details:`, {
+        message: error.message,
+        stack: error.stack?.substring(0, 500)
+      });
       toast({
         title: 'OAuth Processing Error',
         description: `Failed to complete ${platform} connection: ${error.message}`,

@@ -402,12 +402,23 @@ app.post('/campaigns', (req, res) => {
 
 // OAuth token exchange endpoint
 app.post('/oauth/token-exchange', async (req, res) => {
-  const { platform, code, state, codeVerifier } = req.body;
+  const { platform, code, state } = req.body;
   
   console.log(`🔄 Token exchange request for ${platform}:`, {
     hasCode: !!code,
-    hasState: !!state,
-    hasCodeVerifier: !!codeVerifier
+    hasState: !!state
+  });
+
+  // Retrieve the stored PKCE code verifier
+  console.log(`🔍 Looking for code verifier with state: ${state}`);
+  console.log(`📊 Total stored verifiers: ${codeVerifiers.size}`);
+  console.log(`🗂️ Available states:`, Array.from(codeVerifiers.keys()));
+  
+  const storedCodeVerifier = codeVerifiers.get(state);
+  console.log(`🔍 Retrieved PKCE code verifier for ${platform}:`, {
+    found: !!storedCodeVerifier,
+    length: storedCodeVerifier ? storedCodeVerifier.length : 0,
+    requestedState: state
   });
 
   try {
@@ -434,12 +445,20 @@ app.post('/oauth/token-exchange', async (req, res) => {
     // Prepare token request
     let tokenRequestBody;
     if (platform === 'twitter') {
+      if (!storedCodeVerifier) {
+        console.error(`❌ No PKCE code verifier found for state: ${state}`);
+        return res.status(400).json({ 
+          error: 'PKCE code verifier not found',
+          details: `No code verifier stored for state: ${state}`
+        });
+      }
+      
       tokenRequestBody = new URLSearchParams({
         grant_type: 'authorization_code',
         code,
         redirect_uri: `http://localhost:${PORT}/auth/${platform}/callback`,
         client_id: config.clientId,
-        code_verifier: codeVerifier
+        code_verifier: storedCodeVerifier
       });
     } else {
       tokenRequestBody = new URLSearchParams({
@@ -451,17 +470,47 @@ app.post('/oauth/token-exchange', async (req, res) => {
       });
     }
 
-    // Exchange code for token
-    const tokenResponse = await fetch(config.tokenUrl, {
+    // Log the request details for debugging
+    console.log(`🌐 Making token request to ${config.tokenUrl}`);
+    console.log(`📝 Request body:`, tokenRequestBody.toString());
+    console.log(`🔑 Client ID:`, config.clientId ? `${config.clientId}` : 'MISSING');
+    console.log(`🔐 Client Secret:`, config.clientSecret ? `${config.clientSecret.substring(0, 20)}...` : 'MISSING');
+    if (platform === 'twitter') {
+      console.log(`🎫 Code Verifier:`, storedCodeVerifier ? `${storedCodeVerifier.substring(0, 20)}...` : 'MISSING');
+    }
+    console.log(`📋 Full request details:`, {
+      url: config.tokenUrl,
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json'
       },
+      bodyParams: Object.fromEntries(tokenRequestBody.entries())
+    });
+
+    // Exchange code for token
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json'
+    };
+
+    // For Twitter OAuth 2.0 with PKCE, use Basic Authentication
+    if (platform === 'twitter') {
+      const auth = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
+      headers['Authorization'] = `Basic ${auth}`;
+      console.log(`🔐 Added Basic Authorization header for Twitter`);
+    }
+
+    const tokenResponse = await fetch(config.tokenUrl, {
+      method: 'POST',
+      headers,
       body: tokenRequestBody
     });
 
     const tokenText = await tokenResponse.text();
+    console.log(`📡 Token response status: ${tokenResponse.status}`);
+    console.log(`📡 Token response body:`, tokenText);
+    
     if (!tokenResponse.ok) {
       console.error(`❌ Token exchange failed for ${platform}:`, tokenText);
       return res.status(tokenResponse.status).json({ 
@@ -502,10 +551,70 @@ app.post('/oauth/token-exchange', async (req, res) => {
     };
 
     console.log(`✅ Successfully exchanged token for ${platform}`);
+    
+    // Clean up the used code verifier
+    if (platform === 'twitter' && state) {
+      codeVerifiers.delete(state);
+      console.log(`🗑️ Cleaned up code verifier for state: ${state}`);
+    }
+    
     res.json({ success: true, credentials });
 
   } catch (error) {
     console.error(`💥 Token exchange error for ${platform}:`, error);
+    
+    // Clean up the code verifier even on error to prevent reuse
+    if (platform === 'twitter' && state) {
+      codeVerifiers.delete(state);
+      console.log(`🗑️ Cleaned up code verifier after error for state: ${state}`);
+    }
+    
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Fetch Twitter content (server-side to avoid CORS)
+app.get('/api/twitter/content', async (req, res) => {
+  try {
+    const { userId, accessToken, limit = 25 } = req.query;
+    
+    if (!userId || !accessToken) {
+      return res.status(400).json({ error: 'Missing userId or accessToken' });
+    }
+
+    console.log(`📱 Fetching Twitter content for user: ${userId}`);
+
+    const expansions = 'author_id,attachments.media_keys,referenced_tweets.id';
+    const tweetFields = 'created_at,text,public_metrics,context_annotations,attachments';
+    const userFields = 'name,username,profile_image_url';
+    const mediaFields = 'url,preview_image_url,type';
+
+    const response = await fetch(
+      `https://api.twitter.com/2/users/${userId}/tweets?` +
+      `max_results=${limit}&expansions=${expansions}&tweet.fields=${tweetFields}&user.fields=${userFields}&media.fields=${mediaFields}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error(`❌ Twitter content fetch failed:`, data);
+      return res.status(response.status).json({ 
+        error: 'Twitter API error', 
+        details: data.detail || data.title || data.error 
+      });
+    }
+
+    console.log(`✅ Fetched ${data.data?.length || 0} tweets for user ${userId}`);
+    res.json(data);
+
+  } catch (error) {
+    console.error('💥 Twitter content fetch error:', error);
     res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
@@ -513,8 +622,18 @@ app.post('/oauth/token-exchange', async (req, res) => {
 // Store PKCE code verifier
 app.post('/oauth/store-verifier', (req, res) => {
   const { state, codeVerifier } = req.body;
+  console.log(`📥 Received store-verifier request:`, {
+    hasState: !!state,
+    hasCodeVerifier: !!codeVerifier,
+    state: state,
+    codeVerifierLength: codeVerifier ? codeVerifier.length : 0
+  });
+  
   codeVerifiers.set(state, codeVerifier);
   console.log(`💾 Stored code verifier for state: ${state}`);
+  console.log(`📊 Total stored verifiers: ${codeVerifiers.size}`);
+  console.log(`🗂️ All stored states:`, Array.from(codeVerifiers.keys()));
+  
   res.json({ success: true });
 });
 
@@ -1708,52 +1827,27 @@ function createSuccessPage(platform, code, state) {
             timestamp: Date.now()
           };
           
-          // Method 1: Post message to parent window
+          // Send message to parent window and close
           try {
             if (window.opener) {
-              window.opener.postMessage(oauthData, '*');
-              console.log('📤 Sent OAuth data to parent window');
-            }
-          } catch (e) {
-            console.log('⚠️ Could not send to parent:', e);
-          }
-          
-          // Method 2: Store in localStorage
-          try {
-            localStorage.setItem('oauth_result_${platform}', JSON.stringify(oauthData));
-            console.log('💾 Stored OAuth data in localStorage');
-          } catch (e) {
-            console.log('⚠️ Could not store in localStorage:', e);
-          }
-          
-          // Method 3: Try to redirect parent window
-          try {
-            if (window.opener) {
-              const redirectUrl = 'http://localhost:3001?oauth_success=${platform}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}';
-              window.opener.location.href = redirectUrl;
-              console.log('🔄 Redirected parent to:', redirectUrl);
-            }
-          } catch (e) {
-            console.log('⚠️ Could not redirect parent:', e);
-          }
-          
-          // Method 4: Close this window
-            setTimeout(() => {
-            console.log('🔚 Closing OAuth window');
-            try {
-              window.close();
-            } catch (e) {
-              console.log('Could not close window');
-            }
-          }, 2000);
-          
-          // Method 5: Fallback - redirect this window if can't close
-          setTimeout(() => {
-            if (!window.closed) {
-              console.log('🔄 Redirecting this window as fallback');
+              console.log('📤 Sending OAuth data to parent window');
+              window.opener.postMessage(oauthData, 'http://localhost:3001');
+              
+              // Close this popup immediately
+              setTimeout(() => {
+                console.log('🔚 Closing OAuth popup');
+                window.close();
+              }, 500);
+            } else {
+              // Fallback: redirect to main app
+              console.log('🔄 No opener found, redirecting to main app');
               window.location.href = 'http://localhost:3001?oauth_success=${platform}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}';
             }
-          }, 4000);
+          } catch (e) {
+            console.log('⚠️ Error in OAuth callback:', e);
+            // Final fallback
+            window.location.href = 'http://localhost:3001?oauth_success=${platform}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}';
+          }
           </script>
         </body>
       </html>

@@ -172,6 +172,7 @@ class PlatformAuthService {
       console.log(`🌐 Calling server-side token exchange for ${platform}...`);
       
       // Call our server-side token exchange endpoint
+      // The server will retrieve the codeVerifier from storage using the state
       const response = await fetch('http://localhost:3002/oauth/token-exchange', {
         method: 'POST',
         headers: {
@@ -181,8 +182,7 @@ class PlatformAuthService {
         body: JSON.stringify({
           platform,
           code,
-          state,
-          codeVerifier
+          state
         })
       });
 
@@ -509,15 +509,25 @@ class PlatformAuthService {
   // Test API connection
   async testConnection(platform: string): Promise<boolean> {
     const credentials = this.getCredentials(platform);
-    if (!credentials) return false;
-
-    try {
-      await this.getUserInfo(platform, credentials.accessToken);
-      return true;
-    } catch (error) {
-      console.error(`Connection test failed for ${platform}:`, error);
+    if (!credentials) {
+      console.log(`❌ No credentials found for ${platform}`);
       return false;
     }
+
+    // Check if credentials are valid (not expired)
+    if (credentials.expiresAt && credentials.expiresAt < new Date()) {
+      console.log(`❌ Credentials expired for ${platform}`);
+      return false;
+    }
+
+    console.log(`✅ Valid credentials found for ${platform}:`, {
+      userId: credentials.userId,
+      userName: credentials.userName,
+      hasAccessToken: !!credentials.accessToken,
+      expiresAt: credentials.expiresAt?.toISOString()
+    });
+    
+    return true;
   }
 
   // Check for OAuth success via localStorage (COOP policy workaround)

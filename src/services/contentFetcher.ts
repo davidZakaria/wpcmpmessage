@@ -129,28 +129,20 @@ class ContentFetcherService {
     return (data.data || []).map((post: any) => this.transformInstagramPost(post));
   }
 
-  // Twitter content fetching
+  // Twitter content fetching (via server-side API to avoid CORS)
   private async fetchTwitterContent(credentials: PlatformCredentials, options: ContentFetchOptions): Promise<SocialContent[]> {
     const limit = options.limit || 25;
-    const expansions = 'author_id,attachments.media_keys,referenced_tweets.id';
-    const tweetFields = 'created_at,text,public_metrics,context_annotations,attachments';
-    const userFields = 'name,username,profile_image_url';
-    const mediaFields = 'url,preview_image_url,type';
+
+    console.log(`📱 Fetching Twitter content via server API for user: ${credentials.userId}`);
 
     const response = await fetch(
-      `https://api.twitter.com/2/users/${credentials.userId}/tweets?` +
-      `max_results=${limit}&expansions=${expansions}&tweet.fields=${tweetFields}&user.fields=${userFields}&media.fields=${mediaFields}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${credentials.accessToken}`
-        }
-      }
+      `http://localhost:3002/api/twitter/content?userId=${credentials.userId}&accessToken=${credentials.accessToken}&limit=${limit}`
     );
 
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(`Twitter API error: ${data.detail || data.title}`);
+      throw new Error(`Twitter content fetch error: ${data.error || data.details}`);
     }
 
     return (data.data || []).map((tweet: any) => this.transformTwitterPost(tweet, data.includes));
