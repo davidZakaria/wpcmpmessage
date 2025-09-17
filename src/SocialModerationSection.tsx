@@ -97,6 +97,10 @@ import {
   FaYoutube,
   FaTiktok,
   FaLinkedin,
+  FaEyeSlash,
+  FaVolumeMute,
+  FaComments,
+  FaSync,
 } from 'react-icons/fa';
 
 interface ContentItem {
@@ -414,6 +418,56 @@ const SocialModerationSection: React.FC = () => {
     });
   };
 
+  // Handle moderation actions for replies
+  const handleModerationAction = async (action: 'hide' | 'mute' | 'block', replyId: string, authorId: string) => {
+    try {
+      const twitterCredentials = platformAuth.getStoredCredentials('twitter');
+      if (!twitterCredentials) {
+        throw new Error('Twitter credentials not found');
+      }
+
+      let success = false;
+      let actionText = '';
+
+      switch (action) {
+        case 'hide':
+          success = await contentFetcher.hideTwitterReply(replyId, twitterCredentials.accessToken);
+          actionText = 'hidden';
+          break;
+        case 'mute':
+          success = await contentFetcher.muteTwitterUser(twitterCredentials.userId, authorId, twitterCredentials.accessToken);
+          actionText = 'muted';
+          break;
+        case 'block':
+          success = await contentFetcher.blockTwitterUser(twitterCredentials.userId, authorId, twitterCredentials.accessToken);
+          actionText = 'blocked';
+          break;
+      }
+
+      if (success) {
+        toast({
+          title: `User ${actionText}`,
+          description: `The user has been ${actionText} successfully.`,
+          status: 'success',
+          duration: 3000,
+          isClosable: true,
+        });
+
+        // Refresh content to reflect changes
+        await loadRealContent();
+      }
+    } catch (error: any) {
+      console.error(`Moderation action failed:`, error);
+      toast({
+        title: 'Moderation Failed',
+        description: error.message || 'Failed to perform moderation action',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
+
   const handleCreateRule = () => {
     if (!newRule.name || !newRule.description) {
       toast({
@@ -688,71 +742,178 @@ const SocialModerationSection: React.FC = () => {
                         </VStack>
                       </VStack>
                     ) : (
-                      <Table variant="simple">
-                        <Thead>
-                          <Tr>
-                            <Th>Platform</Th>
-                            <Th>Content</Th>
-                            <Th>Author</Th>
-                            <Th>Severity</Th>
-                            <Th>Status</Th>
-                            <Th>AI Score</Th>
-                            <Th>Actions</Th>
-                          </Tr>
-                        </Thead>
-                        <Tbody>
-                          {filteredContent.map((item) => (
-                            <Tr key={item.id}>
-                              <Td>
-                                <Badge colorScheme="blue">{item.platform}</Badge>
-                              </Td>
-                              <Td maxW="300px">
-                                <Text isTruncated>{item.content}</Text>
-                              </Td>
-                              <Td>{item.author}</Td>
-                              <Td>
-                                <Badge colorScheme={getSeverityColor(item.severity)}>
-                                  {item.severity}
-                                </Badge>
-                              </Td>
-                              <Td>
-                                <Badge colorScheme={getStatusColor(item.status)}>
-                                  {item.status}
-                                </Badge>
-                              </Td>
-                              <Td>{item.aiConfidence}%</Td>
-                              <Td>
-                                <HStack spacing={2}>
-                                  <Button
-                                    size="xs"
-                                    colorScheme="green"
-                                    onClick={() => handleContentAction(item.id, 'approve')}
-                                  >
-                                    <Icon as={FaCheck} />
-                                  </Button>
-                                  <Button
-                                    size="xs"
-                                    colorScheme="red"
-                                    onClick={() => handleContentAction(item.id, 'reject')}
-                                  >
-                                    <Icon as={FaBan} />
-                                  </Button>
-                                  <Button
-                                    size="xs"
-                                    variant="outline"
-                                    onClick={() => {
-                                      setSelectedContent(item);
-                                      onContentModalOpen();
-                                    }}
-                                  >
-                                    View
-                                  </Button>
-                                </HStack>
-                              </Td>
-                            </Tr>
-                          ))}
-                        </Tbody>
-                      </Table>
+                      <VStack spacing={4} align="stretch">
+                        {filteredContent.map((item) => {
+                          const originalContent = realContent.find(c => c.id === item.id);
+                          return (
+                            <Card key={item.id} variant="outline">
+                              <CardBody>
+                                <VStack spacing={4} align="stretch">
+                                  {/* Main Tweet */}
+                                  <HStack justify="space-between" align="flex-start">
+                                    <VStack align="stretch" spacing={3} flex={1}>
+                                      <HStack spacing={3} flexWrap="wrap">
+                                        <Badge colorScheme="blue">{item.platform}</Badge>
+                                        <Text fontSize="sm" color="gray.500">
+                                          @{item.author}
+                                        </Text>
+                                        <Badge colorScheme={getSeverityColor(item.severity)}>
+                                          {item.severity}
+                                        </Badge>
+                                        <Badge colorScheme={getStatusColor(item.status)}>
+                                          {item.status}
+                                        </Badge>
+                                        <Text fontSize="xs" color="gray.400">
+                                          AI: {item.aiConfidence}%
+                                        </Text>
+                                      </HStack>
+                                      
+                                      <Text fontSize="md" fontWeight="medium">
+                                        {item.content}
+                                      </Text>
+                                      
+                                      <HStack spacing={4} fontSize="sm" color="gray.500">
+                                        <HStack>
+                                          <Icon as={FaUsers} />
+                                          <Text>{originalContent?.engagement?.likes || 0} likes</Text>
+                                        </HStack>
+                                        <HStack>
+                                          <Icon as={FaSync} />
+                                          <Text>{originalContent?.engagement?.shares || 0} shares</Text>
+                                        </HStack>
+                                        <HStack>
+                                          <Icon as={FaComments} />
+                                          <Text>{originalContent?.replies?.length || 0} replies</Text>
+                                        </HStack>
+                                      </HStack>
+                                    </VStack>
+                                    
+                                    <VStack spacing={2}>
+                                      <HStack spacing={2}>
+                                        <Button
+                                          size="xs"
+                                          colorScheme="green"
+                                          onClick={() => handleContentAction(item.id, 'approve')}
+                                        >
+                                          <Icon as={FaCheck} />
+                                        </Button>
+                                        <Button
+                                          size="xs"
+                                          colorScheme="red"
+                                          onClick={() => handleContentAction(item.id, 'reject')}
+                                        >
+                                          <Icon as={FaBan} />
+                                        </Button>
+                                        <Button
+                                          size="xs"
+                                          colorScheme="orange"
+                                          onClick={() => handleContentAction(item.id, 'flag')}
+                                        >
+                                          <Icon as={FaExclamationTriangle} />
+                                        </Button>
+                                      </HStack>
+                                      <Button
+                                        size="xs"
+                                        colorScheme="blue"
+                                        variant="outline"
+                                        onClick={() => {
+                                          setSelectedContent(item);
+                                          onContentModalOpen();
+                                        }}
+                                      >
+                                        <Icon as={FaEye} mr={1} />
+                                        Details
+                                      </Button>
+                                    </VStack>
+                                  </HStack>
+
+                                  {/* Replies Section */}
+                                  {originalContent?.replies && originalContent.replies.length > 0 && (
+                                    <Box pl={4} borderLeft="2px solid" borderLeftColor="gray.200">
+                                      <Text fontSize="sm" fontWeight="bold" color="gray.600" mb={3}>
+                                        💬 Replies ({originalContent.replies.length})
+                                      </Text>
+                                      <VStack spacing={3} align="stretch">
+                                        {originalContent.replies.slice(0, 3).map((reply) => (
+                                          <Box key={reply.id} p={3} bg="gray.50" borderRadius="md">
+                                            <HStack justify="space-between" align="flex-start">
+                                              <VStack align="stretch" spacing={2} flex={1}>
+                                                <HStack spacing={2}>
+                                                  <Text fontSize="sm" fontWeight="medium">
+                                                    {reply.author.name}
+                                                  </Text>
+                                                  <Text fontSize="xs" color="gray.500">
+                                                    @{reply.author.username}
+                                                  </Text>
+                                                  {reply.author.verified && (
+                                                    <Icon as={FaCheck} color="blue.500" boxSize={3} />
+                                                  )}
+                                                </HStack>
+                                                <Text fontSize="sm">{reply.content}</Text>
+                                                <HStack spacing={3} fontSize="xs" color="gray.500">
+                                                  <Text>❤️ {reply.engagement.likes || 0}</Text>
+                                                  <Text>🔄 {reply.engagement.retweets || 0}</Text>
+                                                  <Text>💬 {reply.engagement.replies || 0}</Text>
+                                                </HStack>
+                                              </VStack>
+                                              
+                                              <VStack spacing={1}>
+                                                <Tooltip label="Hide Reply">
+                                                  <Button
+                                                    size="xs"
+                                                    colorScheme="red"
+                                                    variant="outline"
+                                                    onClick={() => handleModerationAction('hide', reply.id, reply.author.id)}
+                                                  >
+                                                    <Icon as={FaEyeSlash} />
+                                                  </Button>
+                                                </Tooltip>
+                                                <Tooltip label="Mute User">
+                                                  <Button
+                                                    size="xs"
+                                                    colorScheme="orange"
+                                                    variant="outline"
+                                                    onClick={() => handleModerationAction('mute', reply.id, reply.author.id)}
+                                                  >
+                                                    <Icon as={FaVolumeMute} />
+                                                  </Button>
+                                                </Tooltip>
+                                                <Tooltip label="Block User">
+                                                  <Button
+                                                    size="xs"
+                                                    colorScheme="red"
+                                                    onClick={() => handleModerationAction('block', reply.id, reply.author.id)}
+                                                  >
+                                                    <Icon as={FaBan} />
+                                                  </Button>
+                                                </Tooltip>
+                                              </VStack>
+                                            </HStack>
+                                          </Box>
+                                        ))}
+                                        
+                                        {originalContent.replies.length > 3 && (
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            colorScheme="blue"
+                                            onClick={() => {
+                                              setSelectedContent(item);
+                                              onContentModalOpen();
+                                            }}
+                                          >
+                                            View all {originalContent.replies.length} replies
+                                          </Button>
+                                        )}
+                                      </VStack>
+                                    </Box>
+                                  )}
+                                </VStack>
+                              </CardBody>
+                            </Card>
+                          );
+                        })}
+                      </VStack>
                     )}
                   </CardBody>
                 </Card>

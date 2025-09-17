@@ -24,6 +24,26 @@ export interface SocialContent {
   postUrl?: string;
   contentType: 'text' | 'image' | 'video' | 'link';
   rawData?: any; // Store original platform data
+  replies?: SocialReply[]; // Replies to this content
+}
+
+export interface SocialReply {
+  id: string;
+  content: string;
+  author: {
+    id: string;
+    name: string;
+    username?: string;
+    profileUrl?: string;
+    verified?: boolean;
+  };
+  timestamp: Date;
+  engagement: {
+    likes?: number;
+    replies?: number;
+    retweets?: number;
+  };
+  rawData?: any;
 }
 
 export interface ContentFetchOptions {
@@ -266,6 +286,29 @@ class ContentFetcherService {
   private transformTwitterPost(tweet: any, includes: any = {}): SocialContent {
     const author = includes.users?.find((user: any) => user.id === tweet.author_id) || {};
     
+    // Transform replies if they exist
+    const replies: SocialReply[] = (tweet.replies || []).map((reply: any) => {
+      const replyAuthor = includes.users?.find((user: any) => user.id === reply.author_id) || {};
+      return {
+        id: reply.id,
+        content: reply.text || 'No text content',
+        author: {
+          id: reply.author_id,
+          name: replyAuthor.name || 'Unknown User',
+          username: replyAuthor.username,
+          profileUrl: replyAuthor.profile_image_url,
+          verified: replyAuthor.verified || false
+        },
+        timestamp: new Date(reply.created_at),
+        engagement: {
+          likes: reply.public_metrics?.like_count || 0,
+          replies: reply.public_metrics?.reply_count || 0,
+          retweets: reply.public_metrics?.retweet_count || 0
+        },
+        rawData: reply
+      };
+    });
+    
     return {
       id: tweet.id,
       platform: 'twitter',
@@ -287,7 +330,8 @@ class ContentFetcherService {
       postUrl: `https://twitter.com/${author.username}/status/${tweet.id}`,
       contentType: includes.media?.some((media: any) => media.type === 'video') ? 'video' :
                   includes.media?.some((media: any) => media.type === 'photo') ? 'image' : 'text',
-      rawData: tweet
+      rawData: tweet,
+      replies: replies
     };
   }
 
@@ -437,6 +481,96 @@ class ContentFetcherService {
     });
 
     return stats;
+  }
+
+  // Twitter moderation actions
+  async muteTwitterUser(userId: string, targetUserId: string, accessToken: string): Promise<boolean> {
+    try {
+      console.log(`🔇 Muting Twitter user ${targetUserId}`);
+      
+      const response = await fetch('http://localhost:3002/api/twitter/mute-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          userId,
+          targetUserId,
+          accessToken
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(`Mute failed: ${data.details || data.error}`);
+      }
+
+      console.log(`✅ Successfully muted user ${targetUserId}`);
+      return true;
+    } catch (error) {
+      console.error('Error muting user:', error);
+      throw error;
+    }
+  }
+
+  async blockTwitterUser(userId: string, targetUserId: string, accessToken: string): Promise<boolean> {
+    try {
+      console.log(`🚫 Blocking Twitter user ${targetUserId}`);
+      
+      const response = await fetch('http://localhost:3002/api/twitter/block-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          userId,
+          targetUserId,
+          accessToken
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(`Block failed: ${data.details || data.error}`);
+      }
+
+      console.log(`✅ Successfully blocked user ${targetUserId}`);
+      return true;
+    } catch (error) {
+      console.error('Error blocking user:', error);
+      throw error;
+    }
+  }
+
+  async hideTwitterReply(tweetId: string, accessToken: string): Promise<boolean> {
+    try {
+      console.log(`👁️ Hiding Twitter reply ${tweetId}`);
+      
+      const response = await fetch('http://localhost:3002/api/twitter/hide-reply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          tweetId,
+          accessToken
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(`Hide reply failed: ${data.details || data.error}`);
+      }
+
+      console.log(`✅ Successfully hid reply ${tweetId}`);
+      return true;
+    } catch (error) {
+      console.error('Error hiding reply:', error);
+      throw error;
+    }
   }
 }
 

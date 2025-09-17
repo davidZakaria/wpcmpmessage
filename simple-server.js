@@ -245,12 +245,18 @@ const createSuccessPageWithCredentials = (platform, credentials) => {
           console.log('🎉 OAuth success for ${platform} with credentials');
           
           // Store credentials directly from server data
+          const userInfo = ${JSON.stringify(credentials.userInfo || {}).replace(/"/g, '\\"')};
+          const userId = userInfo.data ? userInfo.data.id : userInfo.id;
+          const userName = userInfo.data ? (userInfo.data.name || userInfo.data.username) : (userInfo.name || userInfo.username);
+          
           const credentialsData = {
             accessToken: '${credentials.accessToken}',
             refreshToken: '${credentials.refreshToken || ''}',
             expiresIn: ${credentials.expiresIn || 3600},
             scope: '${credentials.scope || ''}',
-            userInfo: ${JSON.stringify(credentials.userInfo || {}).replace(/"/g, '\\"')},
+            userId: userId,
+            userName: userName,
+            userInfo: userInfo,
             connectedAt: '${credentials.connectedAt}'
           };
           
@@ -299,6 +305,246 @@ const createSuccessPageWithCredentials = (platform, credentials) => {
       </body>
     </html>
   `;
+};
+
+// Twitter content endpoint
+app.get('/api/twitter/content', async (req, res) => {
+  const { userId, accessToken, limit = 25 } = req.query;
+  
+  console.log(`📱 Twitter content request:`, { 
+    userId: userId ? 'present' : 'missing',
+    hasAccessToken: !!accessToken,
+    limit 
+  });
+
+  if (!userId || userId === 'undefined') {
+    return res.status(400).json({ 
+      error: 'Missing or invalid userId',
+      details: 'userId is required and cannot be undefined'
+    });
+  }
+
+  if (!accessToken) {
+    return res.status(400).json({ 
+      error: 'Missing access token',
+      details: 'accessToken is required'
+    });
+  }
+
+  try {
+    // Fetch user's tweets from Twitter API with conversation data
+    const tweetsResponse = await fetch(
+      `https://api.twitter.com/2/users/${userId}/tweets?max_results=${Math.min(limit, 100)}&tweet.fields=created_at,author_id,public_metrics,context_annotations,conversation_id,in_reply_to_user_id,referenced_tweets&expansions=author_id,in_reply_to_user_id,referenced_tweets.id&user.fields=name,username,profile_image_url,verified`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    const tweetsData = await tweetsResponse.json();
+
+    if (!tweetsResponse.ok) {
+      console.error(`❌ Twitter API error:`, tweetsData);
+      return res.status(tweetsResponse.status).json({
+        error: 'Twitter API error',
+        details: tweetsData.detail || tweetsData.title || 'Unknown error',
+        twitterError: tweetsData
+      });
+    }
+
+    console.log(`✅ Successfully fetched ${tweetsData.data?.length || 0} tweets for user ${userId}`);
+
+    // For each tweet, fetch replies if it has any
+    const tweetsWithReplies = [];
+    
+    if (tweetsData.data) {
+      for (const tweet of tweetsData.data) {
+        const tweetWithReplies = { ...tweet, replies: [] };
+        
+        // Fetch replies to this tweet
+        try {
+          const repliesResponse = await fetch(
+            `https://api.twitter.com/2/tweets/search/recent?query=conversation_id:${tweet.conversation_id} -from:${userId}&max_results=100&tweet.fields=created_at,author_id,public_metrics,in_reply_to_user_id&expansions=author_id&user.fields=name,username,profile_image_url,verified`,
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Accept': 'application/json'
+              }
+            }
+          );
+          
+          if (repliesResponse.ok) {
+            const repliesData = await repliesResponse.json();
+            tweetWithReplies.replies = repliesData.data || [];
+            
+            // Merge reply authors into includes
+            if (repliesData.includes?.users) {
+              if (!tweetsData.includes) tweetsData.includes = {};
+              if (!tweetsData.includes.users) tweetsData.includes.users = [];
+              
+              // Add new users, avoiding duplicates
+              for (const user of repliesData.includes.users) {
+                if (!tweetsData.includes.users.find(u => u.id === user.id)) {
+                  tweetsData.includes.users.push(user);
+                }
+              }
+            }
+            
+            console.log(`📬 Found ${tweetWithReplies.replies.length} replies for tweet ${tweet.id}`);
+          }
+        } catch (replyError) {
+          console.warn(`⚠️ Could not fetch replies for tweet ${tweet.id}:`, replyError.message);
+        }
+        
+        tweetsWithReplies.push(tweetWithReplies);
+      }
+    }
+    
+    res.json({
+      data: tweetsWithReplies,
+      includes: tweetsData.includes || {},
+      meta: tweetsData.meta || {}
+    });
+
+  } catch (error) {
+    console.error(`💥 Twitter content fetch error:`, error);
+    res.status(500).json({
+      error: 'Server error',
+      details: error.message
+    });
+  }
+});
+
+// Twitter moderation actions
+app.post('/api/twitter/mute-user', async (req, res) => {
+  const { userId, targetUserId, accessToken } = req.body;
+  
+  console.log(`🔇 Muting user ${targetUserId} for ${userId}`);
+
+  try {
+    const response = await fetch(
+      `https://api.twitter.com/2/users/${userId}/muting`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          target_user_id: targetUserId
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error(`❌ Mute user failed:`, data);
+      return res.status(response.status).json({
+        error: 'Mute failed',
+        details: data.detail || data.title || 'Unknown error',
+        twitterError: data
+      });
+    }
+
+    console.log(`✅ Successfully muted user ${targetUserId}`);
+    res.json({ success: true, data });
+
+  } catch (error) {
+    console.error(`💥 Mute user error:`, error);
+    res.status(500).json({
+      error: 'Server error',
+      details: error.message
+    });
+  }
+});
+
+app.post('/api/twitter/block-user', async (req, res) => {
+  const { userId, targetUserId, accessToken } = req.body;
+  
+  console.log(`🚫 Blocking user ${targetUserId} for ${userId}`);
+
+  try {
+    const response = await fetch(
+      `https://api.twitter.com/2/users/${userId}/blocking`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          target_user_id: targetUserId
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error(`❌ Block user failed:`, data);
+      return res.status(response.status).json({
+        error: 'Block failed',
+        details: data.detail || data.title || 'Unknown error',
+        twitterError: data
+      });
+    }
+
+    console.log(`✅ Successfully blocked user ${targetUserId}`);
+    res.json({ success: true, data });
+
+  } catch (error) {
+    console.error(`💥 Block user error:`, error);
+    res.status(500).json({
+      error: 'Server error',
+      details: error.message
+    });
+  }
+});
+
+app.post('/api/twitter/hide-reply', async (req, res) => {
+  const { tweetId, accessToken } = req.body;
+  
+  console.log(`👁️ Hiding reply ${tweetId}`);
+
+  try {
+    const response = await fetch(
+      `https://api.twitter.com/2/tweets/${tweetId}/hidden`,
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          hidden: true
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error(`❌ Hide reply failed:`, data);
+      return res.status(response.status).json({
+        error: 'Hide reply failed',
+        details: data.detail || data.title || 'Unknown error',
+        twitterError: data
+      });
+    }
+
+    console.log(`✅ Successfully hid reply ${tweetId}`);
+    res.json({ success: true, data });
+
+  } catch (error) {
+    console.error(`💥 Hide reply error:`, error);
+    res.status(500).json({
+      error: 'Server error',
+      details: error.message
+    });
+  }
 });
 
 // Health check
