@@ -539,6 +539,25 @@ app.post('/oauth/token-exchange', async (req, res) => {
     }
 
     const userInfo = JSON.parse(userText);
+    console.log(`👤 Raw user info response for ${platform}:`, userInfo);
+
+    // Extract user data based on platform
+    let userData = {};
+    if (platform === 'twitter') {
+      userData = {
+        id: userInfo.data?.id,
+        name: userInfo.data?.name,
+        username: userInfo.data?.username
+      };
+    } else if (platform === 'youtube') {
+      userData = {
+        id: userInfo.id,
+        name: userInfo.name,
+        username: userInfo.email
+      };
+    }
+
+    console.log(`👤 Extracted user data for ${platform}:`, userData);
 
     // Return complete credentials
     const credentials = {
@@ -546,7 +565,9 @@ app.post('/oauth/token-exchange', async (req, res) => {
       refreshToken: tokenData.refresh_token,
       expiresIn: tokenData.expires_in,
       scope: tokenData.scope,
-      userInfo: userInfo,
+      userInfo: userData,
+      userId: userData.id,
+      userName: userData.name,
       connectedAt: new Date().toISOString()
     };
 
