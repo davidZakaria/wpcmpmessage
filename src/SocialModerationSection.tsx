@@ -333,45 +333,10 @@ const SocialModerationSection: React.FC = () => {
     }
   };
 
-  // Sample data initialization
+  // Initialize with real content only (no sample data)
   useEffect(() => {
-    const sampleContent: ContentItem[] = [
-      {
-        id: '1',
-        platform: 'facebook',
-        content: 'This is a sample post that contains some questionable language and might need review.',
-        author: 'user123',
-        timestamp: new Date(),
-        status: 'flagged',
-        severity: 'medium',
-        category: 'Language',
-        aiConfidence: 85
-      },
-      {
-        id: '2',
-        platform: 'twitter',
-        content: 'Great product! Highly recommend to everyone.',
-        author: 'happycustomer',
-        timestamp: new Date(Date.now() - 3600000),
-        status: 'approved',
-        severity: 'low',
-        category: 'Positive',
-        aiConfidence: 95
-      },
-      {
-        id: '3',
-        platform: 'instagram',
-        content: 'This content contains potential spam and promotional links.',
-        author: 'spammer456',
-        timestamp: new Date(Date.now() - 7200000),
-        status: 'rejected',
-        severity: 'high',
-        category: 'Spam',
-        aiConfidence: 92
-      }
-    ];
-
-    const sampleRules: ModerationRule[] = [
+    // Initialize with default moderation rules only
+    const defaultRules: ModerationRule[] = [
       {
         id: '1',
         name: 'Hate Speech Detection',
@@ -404,8 +369,11 @@ const SocialModerationSection: React.FC = () => {
       }
     ];
 
-    setContentItems(sampleContent);
-    setModerationRules(sampleRules);
+    // No sample content - start with empty array
+    setContentItems([]);
+    setModerationRules(defaultRules);
+    
+    console.log('🚀 Initialized with real content only (no sample data)');
   }, []);
 
   const handleStartMonitoring = () => {
@@ -482,7 +450,23 @@ const SocialModerationSection: React.FC = () => {
     });
   };
 
-  const filteredContent = contentItems.filter(item => {
+  // Convert real content to ContentItem format for display
+  const realContentItems: ContentItem[] = realContent.map(item => ({
+    id: item.id,
+    platform: item.platform,
+    content: item.content,
+    author: item.author.name || item.author.username || 'Unknown',
+    timestamp: item.timestamp,
+    status: 'pending' as const,
+    severity: 'medium' as const,
+    category: 'Real Content',
+    aiConfidence: 85
+  }));
+
+  // Use only real content (no sample data)
+  const allContent = [...realContentItems];
+
+  const filteredContent = allContent.filter(item => {
     const matchesSeverity = filterSeverity === 'all' || item.severity === filterSeverity;
     const matchesStatus = filterStatus === 'all' || item.status === filterStatus;
     const matchesPlatform = filterPlatform === 'all' || item.platform === filterPlatform;
@@ -677,9 +661,32 @@ const SocialModerationSection: React.FC = () => {
                   </CardHeader>
                   <CardBody>
                     {filteredContent.length === 0 ? (
-                      <Text color="gray.500" textAlign="center" py={8}>
-                        No content matches your current filters
-                      </Text>
+                      <VStack spacing={4} py={12} textAlign="center">
+                        <Icon as={FaEye} boxSize={12} color="gray.300" />
+                        <VStack spacing={2}>
+                          <Text fontSize="lg" fontWeight="bold" color="gray.500">
+                            No Content Available
+                          </Text>
+                          <Text color="gray.400" maxW="400px">
+                            {realContent.length === 0 
+                              ? "Connect to social media platforms and load content to start monitoring."
+                              : "No content matches your current filters. Try adjusting the filters above."
+                            }
+                          </Text>
+                          {realContent.length === 0 && (
+                            <Button
+                              colorScheme="blue"
+                              variant="outline"
+                              onClick={loadRealContent}
+                              isLoading={isLoadingContent}
+                              loadingText="Loading..."
+                              mt={4}
+                            >
+                              Load Content from Connected Platforms
+                            </Button>
+                          )}
+                        </VStack>
+                      </VStack>
                     ) : (
                       <Table variant="simple">
                         <Thead>

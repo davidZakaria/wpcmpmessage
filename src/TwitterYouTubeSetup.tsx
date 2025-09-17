@@ -629,14 +629,51 @@ const TwitterYouTubeSetup: React.FC = () => {
                         {platform.isConnected ? 'Connected' : 'Connect'}
                       </Button>
                         {!platform.isConnected && (
-                          <Button
-                            size="sm"
-                            colorScheme="blue"
-                            variant="outline"
-                            onClick={() => manualCheckConnection(platform.id)}
-                          >
-                            Check
-                          </Button>
+                          <>
+                            <Button
+                              size="sm"
+                              colorScheme="blue"
+                              variant="outline"
+                              onClick={() => manualCheckConnection(platform.id)}
+                            >
+                              Check
+                            </Button>
+                            <Button
+                              size="sm"
+                              colorScheme="red"
+                              variant="outline"
+                              onClick={() => {
+                                // Clear all stored data for this platform
+                                const keysToRemove = [
+                                  `social_mod_${platform.id}_credentials`,
+                                  `social_mod_${platform.id}_oauth_success`,
+                                  `social_mod_${platform.id}_state`,
+                                  `social_mod_${platform.id}_code_verifier`,
+                                  `oauth_result_${platform.id}`
+                                ];
+                                
+                                keysToRemove.forEach(key => {
+                                  localStorage.removeItem(key);
+                                  console.log(`🗑️ Removed: ${key}`);
+                                });
+                                
+                                // Update platform status
+                                setPlatforms(prev => prev.map(p => 
+                                  p.id === platform.id ? { ...p, isConnected: false } : p
+                                ));
+                                
+                                toast({
+                                  title: 'Connection Reset',
+                                  description: `${platform.name} connection cleared. Please reconnect.`,
+                                  status: 'info',
+                                  duration: 3000,
+                                  isClosable: true,
+                                });
+                              }}
+                            >
+                              Reset
+                            </Button>
+                          </>
                         )}
                       </HStack>
                     ) : (
