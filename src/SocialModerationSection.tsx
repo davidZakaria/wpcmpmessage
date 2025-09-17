@@ -188,7 +188,28 @@ const SocialModerationSection: React.FC = () => {
   const loadRealContent = async () => {
     setIsLoadingContent(true);
     try {
+      console.log('🔍 Loading content from connected platforms...');
+      
+      // Check which platforms are connected
+      const connectedPlatforms = platformAuth.getConnectedPlatforms();
+      console.log('🔗 Connected platforms:', connectedPlatforms);
+      
+      // Check Twitter credentials specifically
+      const twitterCredentials = platformAuth.getCredentials('twitter');
+      console.log('🐦 Twitter credentials:', {
+        hasCredentials: !!twitterCredentials,
+        userId: twitterCredentials?.userId,
+        userName: twitterCredentials?.userName,
+        hasAccessToken: !!twitterCredentials?.accessToken
+      });
+      
       const content = await contentFetcher.fetchAllContent({ limit: 50 });
+      console.log('📱 Fetched content:', {
+        totalItems: content.length,
+        platforms: [...new Set(content.map(item => item.platform))],
+        twitterItems: content.filter(item => item.platform === 'twitter').length
+      });
+      
       setRealContent(content);
       
       // Update platform stats
@@ -200,7 +221,7 @@ const SocialModerationSection: React.FC = () => {
       
       toast({
         title: 'Content Loaded',
-        description: `Loaded ${content.length} posts from connected platforms`,
+        description: `Loaded ${content.length} posts from connected platforms (${content.filter(item => item.platform === 'twitter').length} from Twitter)`,
         status: 'success',
         duration: 3000,
         isClosable: true,
@@ -209,8 +230,8 @@ const SocialModerationSection: React.FC = () => {
       console.error('Failed to load real content:', error);
       toast({
         title: 'Content Load Failed',
-        description: 'Failed to load content from platforms. Using sample data.',
-        status: 'warning',
+        description: `Failed to load content from platforms: ${error.message}`,
+        status: 'error',
         duration: 5000,
         isClosable: true,
       });
