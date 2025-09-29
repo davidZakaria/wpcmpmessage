@@ -19,6 +19,8 @@ interface PlatformConfig {
 
 class PlatformAuthService {
   private readonly STORAGE_PREFIX = 'social_mod_';
+  private credentialsCache: Map<string, { credentials: PlatformCredentials | null; timestamp: number }> = new Map();
+  private readonly CACHE_DURATION = 5000; // 5 seconds cache
   private readonly configs: Record<string, PlatformConfig> = {
     facebook: {
       clientId: import.meta.env.VITE_FACEBOOK_CLIENT_ID || '',
@@ -36,19 +38,25 @@ class PlatformAuthService {
       clientId: import.meta.env.VITE_TWITTER_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_TWITTER_CLIENT_SECRET || '',
       redirectUri: `http://localhost:3002/auth/twitter/callback`,
-      scope: ['tweet.read', 'users.read', 'follows.read']
+      scope: ['tweet.read', 'tweet.write', 'users.read', 'follows.read', 'follows.write', 'mute.write', 'block.write', 'tweet.moderate.write']
     },
     linkedin: {
       clientId: import.meta.env.VITE_LINKEDIN_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_LINKEDIN_CLIENT_SECRET || '',
       redirectUri: `http://localhost:3002/auth/linkedin/callback`,
-      scope: ['r_liteprofile', 'r_emailaddress', 'w_member_social']
+      scope: ['openid', 'profile', 'email', 'w_member_social']
     },
     youtube: {
       clientId: import.meta.env.VITE_YOUTUBE_CLIENT_ID || '',
       clientSecret: import.meta.env.VITE_YOUTUBE_CLIENT_SECRET || '',
       redirectUri: `http://localhost:3002/auth/youtube/callback`,
       scope: ['https://www.googleapis.com/auth/youtube.readonly']
+    },
+    tiktok: {
+      clientId: import.meta.env.VITE_TIKTOK_CLIENT_ID || '',
+      clientSecret: import.meta.env.VITE_TIKTOK_CLIENT_SECRET || '',
+      redirectUri: `http://localhost:3001/auth/tiktok/callback`,
+      scope: ['user.info.basic', 'video.list', 'video.publish']
     }
   };
 
@@ -88,11 +96,13 @@ class PlatformAuthService {
       instagram: 'https://api.instagram.com/oauth/authorize',
       twitter: 'https://twitter.com/i/oauth2/authorize',
       linkedin: 'https://www.linkedin.com/oauth/v2/authorization',
-      youtube: 'https://accounts.google.com/o/oauth2/v2/auth'
+      youtube: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tiktok: 'https://www.tiktok.com/v2/auth/authorize'
     };
 
     // Generate state parameter
     const state = this.generateState(platform);
+
 
     const params = new URLSearchParams({
       client_id: config.clientId,
@@ -139,11 +149,56 @@ class PlatformAuthService {
       params.append('prompt', 'consent');
     }
 
+    // TikTok-specific OAuth parameters
+    if (platform === 'tiktok') {
+      console.log(`🎵 Generating TikTok OAuth with PKCE...`);
+      const codeVerifier = this.generateCodeVerifier();
+      const codeChallenge = await this.generateCodeChallenge(codeVerifier);
+      
+      // Store code verifier for later use
+      localStorage.setItem(`${this.STORAGE_PREFIX}${platform}_code_verifier`, codeVerifier);
+      
+      // TikTok requires these specific parameters
+      params.append('code_challenge', codeChallenge);
+      params.append('code_challenge_method', 'S256');
+      
+      // TikTok may require additional parameters
+      // Note: Some TikTok implementations require 'client_key' instead of 'client_id'
+      // Let's try both approaches
+      console.log(`🎵 TikTok PKCE generated:`, { 
+        codeChallenge: codeChallenge.substring(0, 20) + '...',
+        codeVerifier: codeVerifier.substring(0, 20) + '...'
+      });
+      
+      // Log the exact parameters being sent
+      console.log(`🎵 TikTok OAuth Parameters:`, {
+        client_id: config.clientId,
+        redirect_uri: config.redirectUri,
+        scope: config.scope.join(' '),
+        response_type: 'code',
+        state: state,
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256'
+      });
+    }
+
     const authUrl = `${baseUrls[platform]}?${params.toString()}`;
     console.log(`🚀 Generated OAuth URL for ${platform}:`, {
       baseUrl: baseUrls[platform],
       paramCount: Array.from(params.keys()).length
     });
+
+    // Enhanced debugging for TikTok
+    if (platform === 'tiktok') {
+      console.log(`🎵 TikTok OAuth Debug Info:`, {
+        clientId: config.clientId,
+        redirectUri: config.redirectUri,
+        scopes: config.scope,
+        state: state,
+        fullUrl: authUrl,
+        params: Object.fromEntries(params.entries())
+      });
+    }
 
     return authUrl;
   }
@@ -222,8 +277,8 @@ class PlatformAuthService {
         refreshToken: serverCredentials.refreshToken,
         expiresAt: serverCredentials.expiresIn ? new Date(Date.now() + serverCredentials.expiresIn * 1000) : undefined,
         scope: serverCredentials.scope?.split(' ') || [],
-        userId: serverCredentials.userInfo?.id || serverCredentials.userInfo?.data?.[0]?.id,
-        userName: serverCredentials.userInfo?.name || serverCredentials.userInfo?.username || serverCredentials.userInfo?.data?.[0]?.name
+        userId: serverCredentials.userId || serverCredentials.userInfo?.id || serverCredentials.userInfo?.data?.[0]?.id,
+        userName: serverCredentials.userName || serverCredentials.userInfo?.name || serverCredentials.userInfo?.username || serverCredentials.userInfo?.data?.[0]?.name
       };
 
       if (!credentials.accessToken) {
@@ -334,6 +389,12 @@ class PlatformAuthService {
             name: data.items?.[0]?.snippet?.title || 'YouTube Channel' 
           };
           break;
+        case 'tiktok':
+          userInfo = { 
+            id: data.data?.user?.open_id || 'unknown', 
+            name: data.data?.user?.display_name || 'TikTok User' 
+          };
+          break;
         default:
           userInfo = { id: data.id, name: data.name };
       }
@@ -364,6 +425,9 @@ class PlatformAuthService {
       expiresAt: credentials.expiresAt?.toISOString()
     }));
     
+    // Clear cache for this platform
+    this.credentialsCache.delete(platform);
+    
     // Also store a success flag for polling detection
     localStorage.setItem(`${this.STORAGE_PREFIX}${platform}_oauth_success`, JSON.stringify({
       success: true,
@@ -373,23 +437,54 @@ class PlatformAuthService {
     }));
   }
 
-  // Retrieve stored credentials
+  // Retrieve stored credentials with caching
   getCredentials(platform: string): PlatformCredentials | null {
+    // Check cache first
+    const cached = this.credentialsCache.get(platform);
+    const now = Date.now();
+    
+    if (cached && (now - cached.timestamp) < this.CACHE_DURATION) {
+      return cached.credentials;
+    }
+
     const key = `${this.STORAGE_PREFIX}${platform}_credentials`;
     const stored = localStorage.getItem(key);
     
-    if (!stored) return null;
+    // Only log occasionally to reduce console spam
+    if (!cached || (now - cached.timestamp) > 10000) { // Log every 10 seconds max
+    console.log(`🔍 Getting credentials for ${platform}:`, { 
+      key, 
+      hasStored: !!stored,
+      storedLength: stored?.length || 0 
+    });
+    }
+    
+    let credentials: PlatformCredentials | null = null;
 
+    if (stored) {
     try {
       const parsed = JSON.parse(stored);
-      return {
+        credentials = {
         ...parsed,
         expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : undefined
       };
     } catch (error) {
       console.error(`Failed to parse credentials for ${platform}:`, error);
-      return null;
+      }
     }
+
+    // Cache the result
+    this.credentialsCache.set(platform, {
+      credentials,
+      timestamp: now
+    });
+
+    return credentials;
+  }
+
+  // Alias for getCredentials (used by moderation system)
+  getStoredCredentials(platform: string): PlatformCredentials | null {
+    return this.getCredentials(platform);
   }
 
   // Check if platform is connected and token is valid
@@ -410,6 +505,9 @@ class PlatformAuthService {
   disconnect(platform: string): void {
     const key = `${this.STORAGE_PREFIX}${platform}_credentials`;
     localStorage.removeItem(key);
+    
+    // Clear cache for this platform
+    this.credentialsCache.delete(platform);
   }
 
   // Refresh access token if refresh token is available
@@ -502,7 +600,7 @@ class PlatformAuthService {
 
   // Get all connected platforms
   getConnectedPlatforms(): string[] {
-    const platforms = ['facebook', 'instagram', 'twitter', 'linkedin', 'youtube'];
+    const platforms = ['facebook', 'instagram', 'twitter', 'linkedin', 'youtube', 'tiktok'];
     return platforms.filter(platform => this.isConnected(platform));
   }
 

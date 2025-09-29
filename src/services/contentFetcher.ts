@@ -91,6 +91,8 @@ class ContentFetcherService {
         return this.fetchLinkedInContent(credentials, options);
       case 'youtube':
         return this.fetchYouTubeContent(credentials, options);
+      case 'tiktok':
+        return this.fetchTikTokContent(credentials, options);
       default:
         throw new Error(`Unsupported platform: ${platform}`);
     }
@@ -154,6 +156,17 @@ class ContentFetcherService {
     const limit = options.limit || 25;
 
     console.log(`📱 Fetching Twitter content via server API for user: ${credentials.userId}`);
+    console.log(`🔍 Twitter credentials debug:`, {
+      hasUserId: !!credentials.userId,
+      hasAccessToken: !!credentials.accessToken,
+      hasUserName: !!credentials.userName,
+      credentialsKeys: Object.keys(credentials)
+    });
+
+    if (!credentials.userId) {
+      console.error('❌ Twitter userId not found in credentials. User needs to reconnect Twitter.');
+      throw new Error('Twitter userId not found in credentials. Please disconnect and reconnect Twitter.');
+    }
 
     const response = await fetch(
       `http://localhost:3002/api/twitter/content?userId=${credentials.userId}&accessToken=${credentials.accessToken}&limit=${limit}`
@@ -168,27 +181,27 @@ class ContentFetcherService {
     return (data.data || []).map((tweet: any) => this.transformTwitterPost(tweet, data.includes));
   }
 
-  // LinkedIn content fetching
+  // LinkedIn content fetching (server-side to avoid CORS)
   private async fetchLinkedInContent(credentials: PlatformCredentials, options: ContentFetchOptions): Promise<SocialContent[]> {
-    // LinkedIn API is more complex and requires specific permissions
-    // This is a simplified version
+    console.log(`🔄 Fetching LinkedIn content via server for user: ${credentials.userId}`);
+    
     const response = await fetch(
-      `https://api.linkedin.com/v2/shares?q=owners&owners=urn:li:person:${credentials.userId}&count=${options.limit || 25}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${credentials.accessToken}`,
-          'X-Restli-Protocol-Version': '2.0.0'
-        }
-      }
+      `http://localhost:3002/api/linkedin/content?userId=${credentials.userId}&accessToken=${credentials.accessToken}&limit=${options.limit || 25}`
     );
 
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(`LinkedIn API error: ${data.message}`);
+      throw new Error(`LinkedIn API error: ${data.error || data.details || 'Unknown error'}`);
     }
 
-    return (data.elements || []).map((post: any) => this.transformLinkedInPost(post));
+    console.log(`✅ Received ${data.posts?.length || 0} LinkedIn posts from server (API: ${data.apiUsed || 'Unknown'})`);
+    
+    if (data.debug) {
+      console.log(`🔍 LinkedIn API Debug:`, data.debug);
+    }
+    
+    return (data.posts || []).map((post: any) => this.transformLinkedInPost(post));
   }
 
   // YouTube content fetching
@@ -337,27 +350,113 @@ class ContentFetcherService {
 
   // Transform LinkedIn post to SocialContent
   private transformLinkedInPost(post: any): SocialContent {
-    const content = post.specificContent?.['com.linkedin.ugc.ShareContent']?.shareCommentary?.text || 'No content';
-    
+    // Handle both UGC API and Shares API response formats
+    let content = 'No content';
+    let authorId = 'unknown';
+    let authorName = 'LinkedIn User';
+    let timestamp = new Date();
+    let postId = post.id || 'unknown';
+
+    // UGC API format
+    if (post.specificContent?.['com.linkedin.ugc.ShareContent']) {
+      content = post.specificContent['com.linkedin.ugc.ShareContent'].shareCommentary?.text || 'No content';
+    }
+    // Shares API format
+    else if (post.text?.text) {
+      content = post.text.text;
+    }
+    // Alternative content extraction
+    else {
+      content = post.commentary || post.text || post.message || post.content?.title || 'No content available';
+    }
+
+    // Extract author information
+    if (post.author) {
+      authorId = post.author.replace('urn:li:person:', '');
+      authorName = post.authorName || 'LinkedIn User';
+    } else if (post.owner) {
+      authorId = post.owner.replace('urn:li:person:', '');
+    }
+
+    // Extract timestamp - handle both UGC and Shares API formats
+    if (post.created?.time) {
+      timestamp = new Date(post.created.time);
+    } else if (post.createdAt) {
+      timestamp = new Date(post.createdAt);
+    } else if (post.publishedAt) {
+      timestamp = new Date(post.publishedAt);
+    } else if (post.created) {
+      // Shares API format
+      timestamp = new Date(post.created);
+    }
+
+    // Clean up post ID
+    if (postId.startsWith('urn:li:ugcPost:')) {
+      postId = postId.replace('urn:li:ugcPost:', '');
+    }
+
     return {
-      id: post.id,
+      id: postId,
       platform: 'linkedin',
       content,
       author: {
-        id: post.owner || 'unknown',
-        name: 'LinkedIn User'
+        id: authorId,
+        name: authorName,
+        profileUrl: `https://linkedin.com/in/${authorId}`
       },
-      timestamp: new Date(post.created?.time || Date.now()),
+      timestamp,
       engagement: {
-        likes: 0, // LinkedIn API doesn't provide engagement metrics in basic response
-        shares: 0,
-        comments: 0
+        likes: post.socialDetail?.totalSocialActivityCounts?.numLikes || 0,
+        shares: post.socialDetail?.totalSocialActivityCounts?.numShares || 0,
+        comments: post.socialDetail?.totalSocialActivityCounts?.numComments || 0
       },
-      mediaUrls: [],
-      postUrl: `https://linkedin.com/feed/update/${post.id}`,
-      contentType: 'text',
+      mediaUrls: this.extractLinkedInMedia(post),
+      postUrl: `https://linkedin.com/feed/update/${postId}`,
+      contentType: this.determineLinkedInContentType(post),
       rawData: post
     };
+  }
+
+  // Helper method to extract media URLs from LinkedIn posts
+  private extractLinkedInMedia(post: any): string[] {
+    const mediaUrls: string[] = [];
+    
+    // Check for media in specificContent
+    const shareContent = post.specificContent?.['com.linkedin.ugc.ShareContent'];
+    if (shareContent?.media) {
+      shareContent.media.forEach((media: any) => {
+        if (media.originalUrl) {
+          mediaUrls.push(media.originalUrl);
+        }
+        if (media.thumbnails?.length > 0) {
+          mediaUrls.push(media.thumbnails[0].url);
+        }
+      });
+    }
+
+    return mediaUrls;
+  }
+
+  // Helper method to determine LinkedIn content type
+  private determineLinkedInContentType(post: any): 'text' | 'image' | 'video' | 'link' {
+    const shareContent = post.specificContent?.['com.linkedin.ugc.ShareContent'];
+    
+    if (shareContent?.media?.length > 0) {
+      const media = shareContent.media[0];
+      if (media.media?.['com.linkedin.digitalmedia.mediaartifact.StillImage']) {
+        return 'image';
+      }
+      if (media.media?.['com.linkedin.digitalmedia.mediaartifact.Video']) {
+        return 'video';
+      }
+    }
+    
+    if (shareContent?.shareFeatures?.hashtags?.length > 0 || 
+        shareContent?.shareFeatures?.mentions?.length > 0) {
+      return 'text';
+    }
+
+    return 'text';
   }
 
   // Transform YouTube video to SocialContent
@@ -484,7 +583,7 @@ class ContentFetcherService {
   }
 
   // Twitter moderation actions
-  async muteTwitterUser(userId: string, targetUserId: string, accessToken: string): Promise<boolean> {
+  async muteTwitterUser(userId: string, targetUserId: string, accessToken: string, targetUsername?: string): Promise<any> {
     try {
       console.log(`🔇 Muting Twitter user ${targetUserId}`);
       
@@ -496,7 +595,8 @@ class ContentFetcherService {
         body: JSON.stringify({
           userId,
           targetUserId,
-          accessToken
+          accessToken,
+          targetUsername
         })
       });
 
@@ -506,15 +606,15 @@ class ContentFetcherService {
         throw new Error(`Mute failed: ${data.details || data.error}`);
       }
 
-      console.log(`✅ Successfully muted user ${targetUserId}`);
-      return true;
+      console.log(`✅ Successfully muted user ${targetUserId} (${data.message})`);
+      return data;
     } catch (error) {
       console.error('Error muting user:', error);
       throw error;
     }
   }
 
-  async blockTwitterUser(userId: string, targetUserId: string, accessToken: string): Promise<boolean> {
+  async blockTwitterUser(userId: string, targetUserId: string, accessToken: string, targetUsername?: string): Promise<any> {
     try {
       console.log(`🚫 Blocking Twitter user ${targetUserId}`);
       
@@ -526,7 +626,8 @@ class ContentFetcherService {
         body: JSON.stringify({
           userId,
           targetUserId,
-          accessToken
+          accessToken,
+          targetUsername
         })
       });
 
@@ -536,15 +637,15 @@ class ContentFetcherService {
         throw new Error(`Block failed: ${data.details || data.error}`);
       }
 
-      console.log(`✅ Successfully blocked user ${targetUserId}`);
-      return true;
+      console.log(`✅ Successfully blocked user ${targetUserId} (${data.message})`);
+      return data;
     } catch (error) {
       console.error('Error blocking user:', error);
       throw error;
     }
   }
 
-  async hideTwitterReply(tweetId: string, accessToken: string): Promise<boolean> {
+  async hideTwitterReply(tweetId: string, accessToken: string, userId?: string): Promise<boolean> {
     try {
       console.log(`👁️ Hiding Twitter reply ${tweetId}`);
       
@@ -555,7 +656,8 @@ class ContentFetcherService {
         },
         body: JSON.stringify({
           tweetId,
-          accessToken
+          accessToken,
+          userId
         })
       });
 
@@ -565,12 +667,67 @@ class ContentFetcherService {
         throw new Error(`Hide reply failed: ${data.details || data.error}`);
       }
 
-      console.log(`✅ Successfully hid reply ${tweetId}`);
-      return true;
+      console.log(`✅ Successfully hid reply ${tweetId} (${data.message})`);
+      return data;
     } catch (error) {
       console.error('Error hiding reply:', error);
       throw error;
     }
+  }
+
+  // TikTok content fetching
+  private async fetchTikTokContent(credentials: PlatformCredentials, options: ContentFetchOptions): Promise<SocialContent[]> {
+    const limit = options.limit || 25;
+    
+    try {
+      // TikTok API endpoint for user videos
+      const response = await fetch(
+        `https://open-api.tiktok.com/video/list/?access_token=${credentials.accessToken}&max_count=${limit}`
+      );
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(`TikTok API error: ${data.error?.message || 'Unknown error'}`);
+      }
+      
+      if (!data.data || !data.data.videos) {
+        console.log('No TikTok videos found');
+        return [];
+      }
+      
+      return data.data.videos.map((video: any) => this.transformTikTokVideo(video));
+    } catch (error) {
+      console.error('TikTok content fetching error:', error);
+      // Return empty array instead of throwing to prevent breaking other platforms
+      return [];
+    }
+  }
+
+  // Transform TikTok video to SocialContent
+  private transformTikTokVideo(video: any): SocialContent {
+    return {
+      id: video.id,
+      platform: 'tiktok',
+      content: video.title || video.description || 'TikTok Video',
+      author: {
+        id: video.owner?.id || 'unknown',
+        name: video.owner?.username || 'TikTok User',
+        username: video.owner?.username,
+        profileUrl: video.owner?.avatar_url
+      },
+      timestamp: new Date(video.create_time * 1000), // TikTok uses Unix timestamp
+      engagement: {
+        likes: video.stats?.like_count || 0,
+        shares: video.stats?.share_count || 0,
+        comments: video.stats?.comment_count || 0,
+        views: video.stats?.view_count || 0
+      },
+      mediaUrls: video.video?.cover_image_url ? [video.video.cover_image_url] : [],
+      postUrl: video.share_url,
+      contentType: 'video',
+      rawData: video
+    };
   }
 }
 

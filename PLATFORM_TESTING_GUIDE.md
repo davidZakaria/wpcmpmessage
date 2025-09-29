@@ -24,6 +24,7 @@ While you're waiting for Meta permissions, you can test and prepare all your pla
 - ✅ Tests existing OAuth connections
 - ✅ Validates API endpoints
 - ✅ Shows connection status and user info
+- ✅ TikTok-specific PKCE (Proof Key for Code Exchange) validation
 
 ### Meta/Facebook Special Handling
 - ⏳ Shows "Pending Approval" status while waiting for Meta permissions
@@ -39,6 +40,7 @@ While you're waiting for Meta permissions, you can test and prepare all your pla
 - **Instagram**: ✅ Ready to connect (needs API keys)
 - **LinkedIn**: ✅ Ready to connect (needs API keys)
 - **YouTube**: ✅ Ready to connect (needs API keys)
+- **TikTok**: ✅ Ready to connect (needs API keys, requires PKCE)
 
 ## 📝 Testing Checklist
 

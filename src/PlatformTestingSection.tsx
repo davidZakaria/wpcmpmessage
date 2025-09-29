@@ -61,6 +61,7 @@ import {
   FaYoutube,
   FaLinkedin,
   FaWhatsapp,
+  FaTiktok,
   FaCheckCircle,
   FaTimesCircle,
   FaClock,
@@ -164,6 +165,15 @@ const PlatformTestingSection: React.FC = () => {
         color: 'red',
         status: 'disconnected',
         hasCredentials: !!import.meta.env.VITE_YOUTUBE_CLIENT_ID,
+        testResults: [],
+      },
+      {
+        id: 'tiktok',
+        name: 'TikTok',
+        icon: FaTiktok,
+        color: 'black',
+        status: 'disconnected',
+        hasCredentials: !!import.meta.env.VITE_TIKTOK_CLIENT_ID,
         testResults: [],
       },
     ];
@@ -456,7 +466,15 @@ const PlatformTestingSection: React.FC = () => {
 
       // Listen for OAuth callback messages
       const handleMessage = async (event: MessageEvent) => {
-        if (event.origin !== window.location.origin) return;
+        console.log('📨 Platform Testing - Message received from:', event.origin, event.data);
+        
+        // Accept messages from localhost origins (development mode)
+        if (!event.origin.includes('localhost') && !event.origin.includes('tiktok.com')) {
+          console.log('🚫 Platform Testing - Ignoring message from non-allowed origin:', event.origin);
+          return;
+        }
+        
+        console.log('✅ Platform Testing - Accepting message from:', event.origin);
         
         if (event.data.type === 'oauth_callback' && event.data.platform === platformId) {
           console.log('Platform Testing - OAuth callback received:', event.data);
@@ -486,6 +504,38 @@ const PlatformTestingSection: React.FC = () => {
             toast({
               title: 'OAuth Error',
               description: `Failed to complete OAuth flow: ${error.message}`,
+              status: 'error',
+              duration: 5000,
+              isClosable: true,
+            });
+          }
+        } else if (event.data.type === 'oauth_complete' && event.data.platform === platformId) {
+          console.log('Platform Testing - OAuth complete received:', event.data);
+          window.removeEventListener('message', handleMessage);
+          
+          if (event.data.success && event.data.credentials) {
+            console.log('Platform Testing - OAuth completed successfully for:', event.data.platform);
+            
+            // Store the credentials in localStorage (server has already stored them in DB)
+            const storageKey = `social_mod_${event.data.platform}_credentials`;
+            localStorage.setItem(storageKey, JSON.stringify(event.data.credentials));
+            
+            updatePlatformStatus(platformId, 'connected');
+            
+            toast({
+              title: 'Platform Connected',
+              description: `Successfully connected to ${platform?.name}`,
+              status: 'success',
+              duration: 3000,
+              isClosable: true,
+            });
+          } else {
+            console.error('Platform Testing - OAuth complete but missing credentials');
+            updatePlatformStatus(platformId, 'disconnected');
+            
+            toast({
+              title: 'Connection Failed',
+              description: `Failed to connect to ${platform?.name}`,
               status: 'error',
               duration: 5000,
               isClosable: true,

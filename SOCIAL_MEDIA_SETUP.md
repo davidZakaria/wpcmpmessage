@@ -47,6 +47,28 @@ VITE_FACEBOOK_CLIENT_SECRET=your_facebook_app_secret_here
    - Note your **Instagram App ID** (this is your `VITE_INSTAGRAM_CLIENT_ID`)
    - Note your **Instagram App Secret** (this is your `VITE_INSTAGRAM_CLIENT_SECRET`)
 5. Add redirect URI: `http://localhost:3001/auth/instagram/callback`
+
+### 3. TikTok API Setup
+
+**What you'll get:** Access to TikTok videos and basic profile info for content moderation.
+
+**Steps:**
+1. Go to [TikTok for Developers](https://developers.tiktok.com/)
+2. Create a new app or use an existing one
+3. In App Settings → Basic:
+   - Note your **Client Key** (this is your `VITE_TIKTOK_CLIENT_ID`)
+   - Note your **Client Secret** (this is your `VITE_TIKTOK_CLIENT_SECRET`)
+4. In OAuth → Settings:
+   - Add redirect URI: `http://localhost:3001/auth/tiktok/callback`
+5. Request these scopes: `user.info.basic`, `video.list`, `video.publish`
+
+**Required Environment Variables:**
+```bash
+VITE_TIKTOK_CLIENT_ID=your_tiktok_client_key_here
+VITE_TIKTOK_CLIENT_SECRET=your_tiktok_client_secret_here
+```
+
+**Note:** TikTok API has limited functionality for content moderation. Video posting requires TikTok for Business API access.
 6. Add test users (including your own Instagram account)
 
 **Required Environment Variables:**
@@ -85,8 +107,10 @@ VITE_TWITTER_CLIENT_SECRET=your_twitter_client_secret_here
 3. In Auth tab:
    - Note your **Client ID** (this is your `VITE_LINKEDIN_CLIENT_ID`)
    - Note your **Client Secret** (this is your `VITE_LINKEDIN_CLIENT_SECRET`)
-4. Add redirect URL: `http://localhost:3001/auth/linkedin/callback`
-5. Request these scopes: `r_liteprofile`, `r_emailaddress`, `w_member_social`
+4. Add redirect URL: `http://localhost:3002/auth/linkedin/callback`
+5. **Request these scopes:** `openid`, `profile`, `email`, `w_member_social`, `r_member_social`
+6. **Important:** You may need to apply for LinkedIn Partner Program for full content access
+7. **Note:** LinkedIn has strict content access policies - some features may require approval
 
 **Required Environment Variables:**
 ```bash

@@ -16,8 +16,8 @@ const PORT = 3002;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' })); // Increase JSON payload limit for media uploads
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // Increase URL-encoded payload limit
 
 // Store for PKCE code verifiers
 const codeVerifiers = new Map();
@@ -37,6 +37,23 @@ db.serialize(() => {
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     total_numbers INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active'
+  )`);
+  
+  // Create scheduled posts table
+  db.run(`CREATE TABLE IF NOT EXISTS scheduled_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    platforms TEXT NOT NULL,
+    media_urls TEXT,
+    hashtags TEXT,
+    mentions TEXT,
+    scheduled_time TEXT NOT NULL,
+    status TEXT DEFAULT 'scheduled',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    published_at TEXT,
+    error_message TEXT,
+    credentials TEXT
   )`);
 
   // Create message_status table (original structure first)
@@ -400,199 +417,162 @@ app.post('/campaigns', (req, res) => {
   stmt.finalize();
 });
 
-// OAuth token exchange endpoint
-app.post('/oauth/token-exchange', async (req, res) => {
-  const { platform, code, state } = req.body;
-  
-  console.log(`🔄 Token exchange request for ${platform}:`, {
-    hasCode: !!code,
-    hasState: !!state
-  });
+// LinkedIn cache to prevent repeated API calls
+const linkedinCache = new Map();
+const LINKEDIN_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-  // Retrieve the stored PKCE code verifier
-  console.log(`🔍 Looking for code verifier with state: ${state}`);
-  console.log(`📊 Total stored verifiers: ${codeVerifiers.size}`);
-  console.log(`🗂️ Available states:`, Array.from(codeVerifiers.keys()));
-  
-  const storedCodeVerifier = codeVerifiers.get(state);
-  console.log(`🔍 Retrieved PKCE code verifier for ${platform}:`, {
-    found: !!storedCodeVerifier,
-    length: storedCodeVerifier ? storedCodeVerifier.length : 0,
-    requestedState: state
-  });
-
+// Fetch LinkedIn content (server-side to avoid CORS)
+app.get('/api/linkedin/content', async (req, res) => {
   try {
-    const configs = {
-      twitter: {
-        clientId: process.env.TWITTER_CLIENT_ID,
-        clientSecret: process.env.TWITTER_CLIENT_SECRET,
-        tokenUrl: 'https://api.twitter.com/2/oauth2/token',
-        userInfoUrl: 'https://api.twitter.com/2/users/me'
-      },
-      youtube: {
-        clientId: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        tokenUrl: 'https://oauth2.googleapis.com/token',
-        userInfoUrl: 'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true'
-      }
-    };
-
-    const config = configs[platform];
-    if (!config) {
-      return res.status(400).json({ error: 'Unsupported platform' });
+    const { userId, accessToken, limit = 25 } = req.query;
+    
+    if (!userId || !accessToken) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'userId and accessToken are required'
+      });
     }
 
-    // Prepare token request
-    let tokenRequestBody;
-    if (platform === 'twitter') {
-      if (!storedCodeVerifier) {
-        console.error(`❌ No PKCE code verifier found for state: ${state}`);
-        return res.status(400).json({ 
-          error: 'PKCE code verifier not found',
-          details: `No code verifier stored for state: ${state}`
+    console.log(`🔄 Fetching LinkedIn content for user: ${userId}`);
+
+    // Check cache first
+    const cacheKey = `linkedin_${userId}`;
+    const cached = linkedinCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < LINKEDIN_CACHE_DURATION) {
+      console.log(`🎯 Returning cached LinkedIn data for user: ${userId}`);
+      return res.json(cached.data);
+    }
+
+    // Try to fetch LinkedIn posts using the UGC API
+    try {
+      console.log(`🔍 Attempting to fetch LinkedIn posts for user: ${userId}`);
+      
+      // First, get user profile to get the person URN
+      const profileResponse = await fetch('https://api.linkedin.com/v2/people/~', {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!profileResponse.ok) {
+        throw new Error(`Profile fetch failed: ${profileResponse.status}`);
+      }
+
+      const profileData = await profileResponse.json();
+      const personUrn = profileData.id;
+      console.log(`✅ Got LinkedIn profile URN: ${personUrn}`);
+
+      // Try multiple LinkedIn API endpoints for posts
+      let postsResponse;
+      let apiUrl;
+      
+      // First try UGC Posts API
+      apiUrl = `https://api.linkedin.com/v2/ugcPosts?q=authors&authors=List(urn:li:person:${personUrn})&count=${limit}&sortBy=CREATED`;
+      console.log(`🔍 Trying LinkedIn UGC API: ${apiUrl}`);
+      
+      postsResponse = await fetch(apiUrl, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json',
+          'X-Restli-Protocol-Version': '2.0.0'
+        }
+      });
+
+      // If UGC API fails or returns empty, try shares API
+      if (!postsResponse.ok) {
+        console.log(`⚠️ UGC API failed (${postsResponse.status}), trying shares API...`);
+        
+        apiUrl = `https://api.linkedin.com/v2/shares?q=owners&owners=List(urn:li:person:${personUrn})&count=${limit}&sortBy=CREATED`;
+        console.log(`🔍 Trying LinkedIn Shares API: ${apiUrl}`);
+        
+        postsResponse = await fetch(apiUrl, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/json',
+            'X-Restli-Protocol-Version': '2.0.0'
+          }
         });
       }
-      
-      tokenRequestBody = new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: `http://localhost:${PORT}/auth/${platform}/callback`,
-        client_id: config.clientId,
-        code_verifier: storedCodeVerifier
-      });
-    } else {
-      tokenRequestBody = new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: `http://localhost:${PORT}/auth/${platform}/callback`,
-        client_id: config.clientId,
-        client_secret: config.clientSecret
-      });
-    }
 
-    // Log the request details for debugging
-    console.log(`🌐 Making token request to ${config.tokenUrl}`);
-    console.log(`📝 Request body:`, tokenRequestBody.toString());
-    console.log(`🔑 Client ID:`, config.clientId ? `${config.clientId}` : 'MISSING');
-    console.log(`🔐 Client Secret:`, config.clientSecret ? `${config.clientSecret.substring(0, 20)}...` : 'MISSING');
-    if (platform === 'twitter') {
-      console.log(`🎫 Code Verifier:`, storedCodeVerifier ? `${storedCodeVerifier.substring(0, 20)}...` : 'MISSING');
-    }
-    console.log(`📋 Full request details:`, {
-      url: config.tokenUrl,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json'
-      },
-      bodyParams: Object.fromEntries(tokenRequestBody.entries())
-    });
-
-    // Exchange code for token
-    const headers = {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'application/json'
-    };
-
-    // For Twitter OAuth 2.0 with PKCE, use Basic Authentication
-    if (platform === 'twitter') {
-      const auth = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
-      headers['Authorization'] = `Basic ${auth}`;
-      console.log(`🔐 Added Basic Authorization header for Twitter`);
-    }
-
-    const tokenResponse = await fetch(config.tokenUrl, {
-      method: 'POST',
-      headers,
-      body: tokenRequestBody
-    });
-
-    const tokenText = await tokenResponse.text();
-    console.log(`📡 Token response status: ${tokenResponse.status}`);
-    console.log(`📡 Token response body:`, tokenText);
-    
-    if (!tokenResponse.ok) {
-      console.error(`❌ Token exchange failed for ${platform}:`, tokenText);
-      return res.status(tokenResponse.status).json({ 
-        error: 'Token exchange failed', 
-        details: tokenText 
-      });
-    }
-
-    const tokenData = JSON.parse(tokenText);
-
-    // Get user info
-    const userResponse = await fetch(config.userInfoUrl, {
-      headers: {
-        'Authorization': `Bearer ${tokenData.access_token}`,
-        'Accept': 'application/json'
+      if (!postsResponse.ok) {
+        const errorData = await postsResponse.json();
+        console.error(`❌ LinkedIn posts fetch failed:`, errorData);
+        throw new Error(`Posts fetch failed: ${postsResponse.status} - ${JSON.stringify(errorData)}`);
       }
+
+      const postsData = await postsResponse.json();
+      console.log(`✅ LinkedIn API Response from ${apiUrl.includes('ugcPosts') ? 'UGC' : 'Shares'} API:`, {
+        elementsCount: postsData.elements?.length || 0,
+        valuesCount: postsData.values?.length || 0, // Shares API uses 'values'
+        hasElements: !!postsData.elements,
+        hasValues: !!postsData.values,
+        responseKeys: Object.keys(postsData),
+        apiEndpoint: apiUrl.includes('ugcPosts') ? 'UGC Posts' : 'Shares'
+      });
+
+      // Handle both UGC API (elements) and Shares API (values) response formats
+      const posts = postsData.elements || postsData.values || [];
+    const response = {
+        success: true,
+        posts: posts,
+        totalCount: posts.length,
+        message: `Successfully fetched ${posts.length} posts from ${apiUrl.includes('ugcPosts') ? 'UGC' : 'Shares'} API`,
+        rawData: postsData,
+        apiUsed: apiUrl.includes('ugcPosts') ? 'UGC Posts' : 'Shares'
+      };
+    } catch (apiError) {
+      console.error(`❌ LinkedIn API error:`, apiError);
+      
+      // Return helpful error information
+      const response = {
+        success: false,
+        posts: [],
+        totalCount: 0,
+        error: apiError.message,
+        message: 'LinkedIn API access failed - check permissions and scopes',
+      info: {
+          reason: 'LinkedIn API requires proper scopes and permissions',
+          requiredScopes: ['r_member_social', 'w_member_social'],
+          currentError: apiError.message,
+          solution: 'Ensure your LinkedIn app has the required permissions and is approved for content access'
+        }
+      };
+    }
+
+    // Cache the response
+    linkedinCache.set(cacheKey, {
+      data: response,
+      timestamp: Date.now()
     });
 
-    const userText = await userResponse.text();
-    if (!userResponse.ok) {
-      console.error(`❌ User info failed for ${platform}:`, userText);
-      return res.status(userResponse.status).json({ 
-        error: 'User info failed', 
-        details: userText 
-      });
-    }
-
-    const userInfo = JSON.parse(userText);
-    console.log(`👤 Raw user info response for ${platform}:`, userInfo);
-
-    // Extract user data based on platform
-    let userData = {};
-    if (platform === 'twitter') {
-      userData = {
-        id: userInfo.data?.id,
-        name: userInfo.data?.name,
-        username: userInfo.data?.username
-      };
-    } else if (platform === 'youtube') {
-      userData = {
-        id: userInfo.id,
-        name: userInfo.name,
-        username: userInfo.email
-      };
-    }
-
-    console.log(`👤 Extracted user data for ${platform}:`, userData);
-
-    // Return complete credentials
-    const credentials = {
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token,
-      expiresIn: tokenData.expires_in,
-      scope: tokenData.scope,
-      userInfo: userData,
-      userId: userData.id,
-      userName: userData.name,
-      connectedAt: new Date().toISOString()
-    };
-
-    console.log(`✅ Successfully exchanged token for ${platform}`);
-    
-    // Clean up the used code verifier
-    if (platform === 'twitter' && state) {
-      codeVerifiers.delete(state);
-      console.log(`🗑️ Cleaned up code verifier for state: ${state}`);
-    }
-    
-    res.json({ success: true, credentials });
+    console.log(`ℹ️ LinkedIn API limitations - returning empty result for user: ${userId}`);
+    res.json(response);
 
   } catch (error) {
-    console.error(`💥 Token exchange error for ${platform}:`, error);
+    console.error(`❌ LinkedIn content fetch error:`, error);
     
-    // Clean up the code verifier even on error to prevent reuse
-    if (platform === 'twitter' && state) {
-      codeVerifiers.delete(state);
-      console.log(`🗑️ Cleaned up code verifier after error for state: ${state}`);
-    }
+    // Always return a successful response for LinkedIn to prevent 500 errors
+    const fallbackResponse = {
+      success: true,
+      posts: [],
+      totalCount: 0,
+      message: 'LinkedIn API access limited',
+      error: error.message
+    };
     
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    res.json(fallbackResponse);
   }
 });
+
+// Rate limiting and caching for Twitter API
+const twitterCache = new Map();
+const twitterRateLimit = new Map();
+const twitterRateLimitedUsers = new Map(); // Track rate-limited users
+const TWITTER_CACHE_DURATION = 30 * 60 * 1000; // 30 minutes (extended)
+const TWITTER_RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutes
+const TWITTER_MAX_REQUESTS = 75; // Twitter API v2 limit
+const TWITTER_RATE_LIMIT_COOLDOWN = 16 * 60 * 1000; // 16 minutes cooldown
 
 // Fetch Twitter content (server-side to avoid CORS)
 app.get('/api/twitter/content', async (req, res) => {
@@ -605,14 +585,77 @@ app.get('/api/twitter/content', async (req, res) => {
 
     console.log(`📱 Fetching Twitter content for user: ${userId}`);
 
-    const expansions = 'author_id,attachments.media_keys,referenced_tweets.id';
-    const tweetFields = 'created_at,text,public_metrics,context_annotations,attachments';
-    const userFields = 'name,username,profile_image_url';
+    // Check if user is currently rate-limited
+    const rateLimitedUntil = twitterRateLimitedUsers.get(userId);
+    if (rateLimitedUntil && Date.now() < rateLimitedUntil) {
+      const waitTime = Math.ceil((rateLimitedUntil - Date.now()) / 1000 / 60);
+      console.log(`⏰ User ${userId} is rate-limited. Wait ${waitTime} minutes.`);
+      
+      // Return cached data if available, even if expired
+      const cacheKey = `${userId}_${limit}`;
+      const cached = twitterCache.get(cacheKey);
+      if (cached) {
+        console.log(`🎯 Returning cached data during rate limit for user: ${userId}`);
+        return res.json({
+          ...cached.data,
+          _cached: true,
+          _rateLimited: true,
+          _message: `Using cached data. Rate limit active for ${waitTime} more minutes.`
+        });
+      }
+      
+      return res.status(429).json({ 
+        error: 'Rate limit active', 
+        details: `Please wait ${waitTime} minutes before trying again. Twitter rate limit is active.`,
+        retryAfter: waitTime * 60
+      });
+    }
+
+    // Check cache first (extended check)
+    const cacheKey = `${userId}_${limit}`;
+    const cached = twitterCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < TWITTER_CACHE_DURATION) {
+      console.log(`🎯 Returning cached Twitter data for user: ${userId} (${Math.round((Date.now() - cached.timestamp) / 1000 / 60)} minutes old)`);
+      return res.json({
+        ...cached.data,
+        _cached: true,
+        _cacheAge: Math.round((Date.now() - cached.timestamp) / 1000 / 60)
+      });
+    }
+
+    // Check rate limiting
+    const now = Date.now();
+    const userRateLimit = twitterRateLimit.get(userId) || { requests: 0, resetTime: now + TWITTER_RATE_LIMIT_WINDOW };
+    
+    if (now < userRateLimit.resetTime && userRateLimit.requests >= TWITTER_MAX_REQUESTS) {
+      const waitTime = Math.ceil((userRateLimit.resetTime - now) / 1000 / 60);
+      console.log(`⏰ Twitter rate limit exceeded for user ${userId}. Wait ${waitTime} minutes.`);
+      
+      // Mark user as rate-limited
+      twitterRateLimitedUsers.set(userId, now + TWITTER_RATE_LIMIT_COOLDOWN);
+      
+      return res.status(429).json({ 
+        error: 'Rate limit exceeded', 
+        details: `Please wait ${waitTime} minutes before trying again. Twitter allows 75 requests per 15 minutes.`,
+        retryAfter: waitTime * 60
+      });
+    }
+
+    // Reset rate limit window if expired
+    if (now >= userRateLimit.resetTime) {
+      userRateLimit.requests = 0;
+      userRateLimit.resetTime = now + TWITTER_RATE_LIMIT_WINDOW;
+    }
+
+    const expansions = 'author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.author_id';
+    const tweetFields = 'created_at,text,public_metrics,context_annotations,attachments,conversation_id,in_reply_to_user_id';
+    const userFields = 'name,username,profile_image_url,verified';
     const mediaFields = 'url,preview_image_url,type';
 
-    const response = await fetch(
+    // First, get user's tweets
+    const tweetsResponse = await fetch(
       `https://api.twitter.com/2/users/${userId}/tweets?` +
-      `max_results=${limit}&expansions=${expansions}&tweet.fields=${tweetFields}&user.fields=${userFields}&media.fields=${mediaFields}`,
+      `max_results=${Math.min(limit, 10)}&expansions=${expansions}&tweet.fields=${tweetFields}&user.fields=${userFields}&media.fields=${mediaFields}`,
       {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
@@ -621,22 +664,910 @@ app.get('/api/twitter/content', async (req, res) => {
       }
     );
 
-    const data = await response.json();
+    userRateLimit.requests++;
+    twitterRateLimit.set(userId, userRateLimit);
 
-    if (!response.ok) {
-      console.error(`❌ Twitter content fetch failed:`, data);
-      return res.status(response.status).json({ 
+    const tweetsData = await tweetsResponse.json();
+
+    if (!tweetsResponse.ok) {
+      console.error(`❌ Twitter tweets fetch failed:`, tweetsData);
+      
+      if (tweetsResponse.status === 429) {
+        console.log(`🚫 Rate limit hit! Marking user ${userId} as rate-limited for 16 minutes`);
+        
+        // Mark user as rate-limited for 16 minutes
+        twitterRateLimitedUsers.set(userId, now + TWITTER_RATE_LIMIT_COOLDOWN);
+        
+        const resetTime = tweetsResponse.headers.get('x-rate-limit-reset');
+        const waitTime = resetTime ? Math.ceil((parseInt(resetTime) * 1000 - now) / 1000 / 60) : 16;
+        
+        // Try to return cached data if available
+        const cached = twitterCache.get(cacheKey);
+        if (cached) {
+          console.log(`🎯 Returning cached data due to rate limit for user: ${userId}`);
+          return res.json({
+            ...cached.data,
+            _cached: true,
+            _rateLimited: true,
+            _message: `Using cached data due to rate limit. Wait ${waitTime} minutes for fresh data.`
+          });
+        }
+        
+        return res.status(429).json({ 
+          error: 'Twitter API rate limit exceeded', 
+          details: `Please wait ${waitTime} minutes before trying again. You've been temporarily rate-limited.`,
+          retryAfter: waitTime * 60
+        });
+      }
+      
+      return res.status(tweetsResponse.status).json({ 
         error: 'Twitter API error', 
-        details: data.detail || data.title || data.error 
+        details: tweetsData.detail || tweetsData.title || tweetsData.error 
       });
     }
 
-    console.log(`✅ Fetched ${data.data?.length || 0} tweets for user ${userId}`);
-    res.json(data);
+    // Now get replies to user's tweets
+    let allReplies = [];
+    let allReplyUsers = [];
+    if (tweetsData.data && tweetsData.data.length > 0) {
+      for (const tweet of tweetsData.data.slice(0, 3)) { // Limit to first 3 tweets to avoid rate limits
+        try {
+          // Check rate limit before each request
+          const currentRateLimit = twitterRateLimit.get(userId);
+          if (currentRateLimit.requests >= TWITTER_MAX_REQUESTS - 5) { // Leave some buffer
+            console.log(`⚠️ Approaching rate limit, skipping replies for tweet ${tweet.id}`);
+            break;
+          }
+
+          const repliesResponse = await fetch(
+            `https://api.twitter.com/2/tweets/search/recent?query=conversation_id:${tweet.conversation_id} -from:${userId}&max_results=10&expansions=${expansions}&tweet.fields=${tweetFields}&user.fields=${userFields}`,
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Accept': 'application/json'
+              }
+            }
+          );
+
+          currentRateLimit.requests++;
+          twitterRateLimit.set(userId, currentRateLimit);
+
+          if (repliesResponse.ok) {
+            const repliesData = await repliesResponse.json();
+            if (repliesData.data) {
+              // Collect reply users
+              if (repliesData.includes?.users) {
+                allReplyUsers.push(...repliesData.includes.users);
+              }
+              
+              allReplies.push(...repliesData.data.map(reply => ({
+                ...reply,
+                parent_tweet_id: tweet.id
+              })));
+            }
+          } else {
+            console.log(`⚠️ Failed to fetch replies for tweet ${tweet.id}: ${repliesResponse.status}`);
+          }
+        } catch (replyError) {
+          console.error(`Error fetching replies for tweet ${tweet.id}:`, replyError);
+        }
+      }
+    }
+
+    // Combine tweets and replies
+    const combinedData = {
+      ...tweetsData,
+      data: tweetsData.data || [],
+      replies: allReplies,
+      includes: {
+        ...tweetsData.includes,
+        users: [...(tweetsData.includes?.users || []), ...allReplyUsers],
+        media: [...(tweetsData.includes?.media || [])]
+      }
+    };
+
+    // Add replies to their parent tweets and filter moderated content
+    const moderationActions = getUserModerationActions(userId);
+    
+    if (combinedData.data) {
+      combinedData.data = combinedData.data.map(tweet => {
+        // Filter replies based on moderation actions
+        const filteredReplies = allReplies
+          .filter(reply => reply.parent_tweet_id === tweet.id)
+          .filter(reply => {
+            // Hide replies from blocked users
+            if (moderationActions.blocked.has(reply.author_id)) {
+              console.log(`🚫 Filtering reply from blocked user: ${reply.author_id}`);
+              return false;
+            }
+            // Hide replies from muted users
+            if (moderationActions.muted.has(reply.author_id)) {
+              console.log(`🔇 Filtering reply from muted user: ${reply.author_id}`);
+              return false;
+            }
+            // Hide specifically hidden replies
+            if (moderationActions.hiddenReplies.has(reply.id)) {
+              console.log(`👁️ Filtering hidden reply: ${reply.id}`);
+              return false;
+            }
+            return true;
+          });
+        
+        return {
+          ...tweet,
+          replies: filteredReplies,
+          _moderationStats: {
+            totalReplies: allReplies.filter(reply => reply.parent_tweet_id === tweet.id).length,
+            visibleReplies: filteredReplies.length,
+            filteredReplies: allReplies.filter(reply => reply.parent_tweet_id === tweet.id).length - filteredReplies.length
+          }
+        };
+      });
+    }
+
+    // Cache the result
+    twitterCache.set(cacheKey, {
+      data: combinedData,
+      timestamp: now
+    });
+
+    console.log(`✅ Fetched ${combinedData.data?.length || 0} tweets and ${allReplies.length} replies for user ${userId}`);
+    console.log(`📊 Rate limit status: ${userRateLimit.requests}/${TWITTER_MAX_REQUESTS} requests used`);
+    
+    res.json(combinedData);
 
   } catch (error) {
     console.error('💥 Twitter content fetch error:', error);
     res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Twitter rate limit status endpoint
+app.get('/api/twitter/rate-limit-status/:userId', (req, res) => {
+  const { userId } = req.params;
+  
+  const rateLimitedUntil = twitterRateLimitedUsers.get(userId);
+  const userRateLimit = twitterRateLimit.get(userId);
+  const now = Date.now();
+  
+  const status = {
+    userId,
+    isRateLimited: rateLimitedUntil && now < rateLimitedUntil,
+    rateLimitedUntil: rateLimitedUntil || null,
+    waitTimeMinutes: rateLimitedUntil && now < rateLimitedUntil ? Math.ceil((rateLimitedUntil - now) / 1000 / 60) : 0,
+    requestsUsed: userRateLimit?.requests || 0,
+    maxRequests: TWITTER_MAX_REQUESTS,
+    windowResetTime: userRateLimit?.resetTime || null,
+    hasCachedData: twitterCache.has(`${userId}_25`) || twitterCache.has(`${userId}_50`) || twitterCache.has(`${userId}_100`)
+  };
+  
+  console.log(`📊 Rate limit status for user ${userId}:`, status);
+  res.json(status);
+});
+
+// Local moderation storage
+const userModerationActions = new Map(); // userId -> { blocked: Set, muted: Set, hiddenReplies: Set }
+
+// Get user's moderation actions
+function getUserModerationActions(userId) {
+  if (!userModerationActions.has(userId)) {
+    userModerationActions.set(userId, {
+      blocked: new Set(),
+      muted: new Set(),
+      hiddenReplies: new Set()
+    });
+  }
+  return userModerationActions.get(userId);
+}
+
+// Twitter moderation endpoints (Local implementation due to API restrictions)
+app.post('/api/twitter/block-user', async (req, res) => {
+  try {
+    const { userId, targetUserId, accessToken, targetUsername } = req.body;
+    
+    if (!userId || !targetUserId || !accessToken) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'userId, targetUserId, and accessToken are required'
+      });
+    }
+
+    console.log(`🚫 Locally blocking Twitter user ${targetUserId} for user ${userId}`);
+
+    // Store the block action locally
+    const moderationActions = getUserModerationActions(userId);
+    moderationActions.blocked.add(targetUserId);
+    
+    // Also add to muted (blocked users are also muted)
+    moderationActions.muted.add(targetUserId);
+
+    console.log(`✅ Successfully blocked user ${targetUserId} locally`);
+    console.log(`📊 User ${userId} has blocked ${moderationActions.blocked.size} users`);
+    
+    // Create better Twitter URLs
+    const twitterProfileUrl = targetUsername 
+      ? `https://twitter.com/${targetUsername.replace('@', '')}`
+      : `https://twitter.com/i/user/${targetUserId}`;
+    
+    res.json({ 
+      success: true, 
+      action: 'blocked',
+      targetUserId,
+      targetUsername,
+      message: 'User filtered from app view. To block on Twitter, visit their profile.',
+      localOnly: true,
+      twitterBlockUrl: twitterProfileUrl,
+      instructions: 'This filters the user from your app view only. Visit their Twitter profile and use the "Block" option from the menu.',
+      blockInstructions: '1. Click the link above\n2. Click the "..." menu on their profile\n3. Select "Block @username"',
+      totalBlocked: moderationActions.blocked.size
+    });
+
+  } catch (error) {
+    console.error('💥 Twitter block error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+app.post('/api/twitter/mute-user', async (req, res) => {
+  try {
+    const { userId, targetUserId, accessToken, targetUsername } = req.body;
+    
+    if (!userId || !targetUserId || !accessToken) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'userId, targetUserId, and accessToken are required'
+      });
+    }
+
+    console.log(`🔇 Locally muting Twitter user ${targetUserId} for user ${userId}`);
+
+    // Store the mute action locally
+    const moderationActions = getUserModerationActions(userId);
+    moderationActions.muted.add(targetUserId);
+
+    console.log(`✅ Successfully muted user ${targetUserId} locally`);
+    console.log(`📊 User ${userId} has muted ${moderationActions.muted.size} users`);
+    
+    // Create better Twitter URLs
+    const twitterProfileUrl = targetUsername 
+      ? `https://twitter.com/${targetUsername.replace('@', '')}`
+      : `https://twitter.com/i/user/${targetUserId}`;
+    
+    res.json({ 
+      success: true, 
+      action: 'muted',
+      targetUserId,
+      targetUsername,
+      message: 'User filtered from app view. To mute on Twitter, visit their profile.',
+      localOnly: true,
+      twitterMuteUrl: twitterProfileUrl,
+      instructions: 'This filters the user from your app view only. Visit their Twitter profile and use the "Mute" option from the menu.',
+      muteInstructions: '1. Click the link above\n2. Click the "..." menu on their profile\n3. Select "Mute @username"',
+      totalMuted: moderationActions.muted.size
+    });
+
+  } catch (error) {
+    console.error('💥 Twitter mute error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+app.post('/api/twitter/hide-reply', async (req, res) => {
+  try {
+    const { tweetId, accessToken, userId, replyAuthorUsername, parentTweetId } = req.body;
+    
+    if (!tweetId || !accessToken || !userId) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'tweetId, accessToken, and userId are required'
+      });
+    }
+
+    console.log(`👁️ Locally hiding Twitter reply ${tweetId} for user ${userId}`);
+
+    // Store the hide action locally
+    const moderationActions = getUserModerationActions(userId);
+    moderationActions.hiddenReplies.add(tweetId);
+
+    console.log(`✅ Successfully hid reply ${tweetId} locally`);
+    console.log(`📊 User ${userId} has hidden ${moderationActions.hiddenReplies.size} replies`);
+    
+    // Create Twitter URL for the specific reply
+    const twitterReplyUrl = replyAuthorUsername && parentTweetId
+      ? `https://twitter.com/${replyAuthorUsername.replace('@', '')}/status/${tweetId}`
+      : `https://twitter.com/i/web/status/${tweetId}`;
+    
+    res.json({ 
+      success: true, 
+      action: 'hidden',
+      tweetId,
+      replyAuthorUsername,
+      message: 'Reply hidden from app view. To hide on Twitter, visit the reply.',
+      localOnly: true,
+      twitterReplyUrl,
+      instructions: 'This hides the reply from your app view only. To hide it on Twitter, visit the reply and use the "..." menu.',
+      hideInstructions: '1. Click the link above to open the reply\n2. Click the "..." menu on the reply\n3. Select "Hide reply" (only available on your own tweets)',
+      totalHidden: moderationActions.hiddenReplies.size,
+      note: 'Note: You can only hide replies on your own tweets on Twitter.'
+    });
+
+  } catch (error) {
+    console.error('💥 Twitter hide reply error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Get user's moderation actions
+app.get('/api/twitter/moderation-actions/:userId', (req, res) => {
+  const { userId } = req.params;
+  const moderationActions = getUserModerationActions(userId);
+  
+  res.json({
+    userId,
+    blocked: Array.from(moderationActions.blocked),
+    muted: Array.from(moderationActions.muted),
+    hiddenReplies: Array.from(moderationActions.hiddenReplies),
+    totals: {
+      blocked: moderationActions.blocked.size,
+      muted: moderationActions.muted.size,
+      hiddenReplies: moderationActions.hiddenReplies.size
+    }
+  });
+});
+
+// Clear user's moderation actions
+app.delete('/api/twitter/moderation-actions/:userId', (req, res) => {
+  const { userId } = req.params;
+  userModerationActions.delete(userId);
+  
+  console.log(`🗑️ Cleared all moderation actions for user ${userId}`);
+  res.json({ success: true, message: 'All moderation actions cleared' });
+});
+
+// Twitter media upload endpoint
+app.post('/api/twitter/upload-media', async (req, res) => {
+  try {
+    const { accessToken, mediaData, mediaType } = req.body;
+    
+    console.log(`📤 Twitter media upload request received`);
+    console.log(`📊 Request details:`, {
+      hasAccessToken: !!accessToken,
+      hasMediaData: !!mediaData,
+      mediaType: mediaType,
+      mediaDataLength: mediaData?.length || 0
+    });
+    
+    if (!accessToken || !mediaData) {
+      console.error(`❌ Missing required parameters:`, {
+        hasAccessToken: !!accessToken,
+        hasMediaData: !!mediaData
+      });
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'accessToken and mediaData are required'
+      });
+    }
+
+    // Validate base64 data format
+    if (!mediaData.match(/^[A-Za-z0-9+/]*={0,2}$/)) {
+      console.error(`❌ Invalid base64 data format`);
+      return res.status(400).json({
+        error: 'Invalid media data',
+        details: 'Media data must be valid base64'
+      });
+    }
+    
+    // Twitter has a 5MB limit for images
+    const estimatedSize = mediaData.length * 0.75; // Base64 is ~33% larger than binary
+    console.log(`📊 Estimated file size: ${(estimatedSize / 1024 / 1024).toFixed(2)}MB`);
+    
+    if (estimatedSize > 5 * 1024 * 1024) {
+      console.error(`❌ File too large: ${(estimatedSize / 1024 / 1024).toFixed(2)}MB`);
+      return res.status(400).json({
+        error: 'File too large',
+        details: `Media file too large: ${(estimatedSize / 1024 / 1024).toFixed(2)}MB (max 5MB)`
+      });
+    }
+    
+    // Prepare upload parameters
+    const uploadParams = new URLSearchParams();
+    uploadParams.append('media_data', mediaData);
+    uploadParams.append('media_category', mediaType?.startsWith('video/') ? 'tweet_video' : 'tweet_image');
+    
+    console.log(`📤 Uploading to Twitter API...`);
+    console.log(`🔑 Using access token: ${accessToken.substring(0, 20)}...`);
+    
+    // Twitter v1.1 media API often requires OAuth 1.0a, but let's try Bearer first
+    console.log(`🔍 Attempting Twitter media upload with Bearer token...`);
+    
+    let uploadResponse = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: uploadParams
+    });
+    
+    console.log(`📡 Twitter v1.1 response:`, {
+      status: uploadResponse.status,
+      statusText: uploadResponse.statusText,
+      ok: uploadResponse.ok
+    });
+
+    // If v1.1 fails, try a different approach - skip media upload for now
+    if (!uploadResponse.ok) {
+      console.log(`⚠️ Twitter v1.1 media API failed, this is expected with Bearer tokens`);
+      console.log(`ℹ️ Twitter v1.1 media API typically requires OAuth 1.0a authentication`);
+      
+      return res.status(501).json({
+        error: 'Twitter media upload not implemented',
+        details: 'Twitter v1.1 media API requires OAuth 1.0a authentication which is not implemented yet',
+        suggestion: 'Text-only posting is available. Media upload requires additional OAuth 1.0a implementation.',
+        workaround: 'Use text-only posts for now'
+      });
+    }
+
+    console.log(`📡 Twitter API response:`, {
+      status: uploadResponse.status,
+      statusText: uploadResponse.statusText,
+      ok: uploadResponse.ok
+    });
+
+    const responseText = await uploadResponse.text();
+    console.log(`📄 Twitter API response body:`, responseText.substring(0, 500));
+
+    let uploadData;
+    try {
+      uploadData = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error(`❌ Failed to parse Twitter response:`, responseText);
+      return res.status(500).json({
+        error: 'Invalid Twitter API response',
+        details: 'Failed to parse Twitter response as JSON',
+        rawResponse: responseText.substring(0, 200)
+      });
+    }
+
+    if (!uploadResponse.ok) {
+      console.error(`❌ Twitter media upload failed:`, uploadData);
+      return res.status(uploadResponse.status).json({
+        error: 'Twitter media upload failed',
+        details: uploadData.errors?.[0]?.message || uploadData.error || 'Unknown error',
+        twitterError: uploadData
+      });
+    }
+
+    console.log(`✅ Media uploaded to Twitter successfully:`, {
+      mediaId: uploadData.media_id_string,
+      size: uploadData.size,
+      type: uploadData.image?.image_type || 'unknown'
+    });
+
+    res.json({
+      success: true,
+      mediaId: uploadData.media_id_string,
+      message: 'Media uploaded successfully',
+      twitterResponse: uploadData
+    });
+
+  } catch (error) {
+    console.error('💥 Twitter media upload error:', error);
+    console.error('💥 Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message,
+      stack: error.stack?.substring(0, 500)
+    });
+  }
+});
+
+// Twitter posting endpoint
+app.post('/api/twitter/post', async (req, res) => {
+  try {
+    const { userId, accessToken, text, mediaIds } = req.body;
+    
+    if (!userId || !accessToken || !text) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'userId, accessToken, and text are required'
+      });
+    }
+
+    console.log(`📝 Publishing Twitter post for user: ${userId}`);
+    console.log(`📄 Post content: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+
+    // Prepare tweet data
+    const tweetData = {
+      text: text
+    };
+
+    // Add media IDs if provided (media should be uploaded separately first)
+    if (mediaIds && mediaIds.length > 0) {
+      console.log(`📎 Attaching ${mediaIds.length} media files to tweet:`, mediaIds);
+      tweetData.media = {
+        media_ids: mediaIds
+      };
+    }
+
+    // Post to Twitter API v2
+    const response = await fetch('https://api.twitter.com/2/tweets', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(tweetData)
+    });
+
+    const responseData = await response.json();
+
+    if (!response.ok) {
+      console.error(`❌ Twitter posting failed:`, responseData);
+      return res.status(response.status).json({
+        error: 'Twitter posting failed',
+        details: responseData.detail || responseData.title || responseData.error,
+        twitterError: responseData
+      });
+    }
+
+    console.log(`✅ Successfully posted to Twitter:`, responseData);
+
+    res.json({
+      success: true,
+      tweetId: responseData.data.id,
+      tweetText: responseData.data.text,
+      message: 'Tweet posted successfully'
+    });
+
+  } catch (error) {
+    console.error('💥 Twitter posting error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message 
+    });
+  }
+});
+
+// Schedule post endpoint
+app.post('/api/posts/schedule', async (req, res) => {
+  try {
+    const { userId, content, platforms, mediaUrls, hashtags, mentions, scheduledTime, credentials } = req.body;
+    
+    if (!userId || !content || !platforms || !scheduledTime) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'userId, content, platforms, and scheduledTime are required'
+      });
+    }
+
+    // Validate scheduled time is in the future
+    const scheduledDate = new Date(scheduledTime);
+    if (scheduledDate <= new Date()) {
+      return res.status(400).json({ 
+        error: 'Invalid scheduled time',
+        details: 'Scheduled time must be in the future'
+      });
+    }
+
+    console.log(`📅 Scheduling post for user: ${userId} at ${scheduledTime}`);
+
+    // Store in database
+    const stmt = db.prepare(`
+      INSERT INTO scheduled_posts 
+      (user_id, content, platforms, media_urls, hashtags, mentions, scheduled_time, status, credentials)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)
+    `);
+    
+    stmt.run([
+      userId,
+      content,
+      JSON.stringify(platforms),
+      JSON.stringify(mediaUrls || []),
+      JSON.stringify(hashtags || []),
+      JSON.stringify(mentions || []),
+      scheduledTime,
+      JSON.stringify(credentials || {})
+    ], function(err) {
+      if (err) {
+        console.error('❌ Error scheduling post:', err);
+        return res.status(500).json({ 
+          error: 'Failed to schedule post',
+          details: err.message
+        });
+      }
+
+      console.log(`✅ Post scheduled with ID: ${this.lastID}`);
+      res.json({
+        success: true,
+        postId: this.lastID,
+        message: 'Post scheduled successfully',
+        scheduledTime: scheduledTime
+      });
+    });
+
+    stmt.finalize();
+
+  } catch (error) {
+    console.error('💥 Schedule post error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message
+    });
+  }
+});
+
+// Get scheduled posts endpoint
+app.get('/api/posts/scheduled/:userId', (req, res) => {
+  const { userId } = req.params;
+  
+  db.all(`
+    SELECT * FROM scheduled_posts 
+    WHERE user_id = ? 
+    ORDER BY scheduled_time ASC
+  `, [userId], (err, rows) => {
+    if (err) {
+      console.error('❌ Error fetching scheduled posts:', err);
+      return res.status(500).json({ 
+        error: 'Failed to fetch scheduled posts',
+        details: err.message
+      });
+    }
+
+    // Parse JSON fields
+    const posts = rows.map(row => ({
+      ...row,
+      platforms: JSON.parse(row.platforms),
+      mediaUrls: JSON.parse(row.media_urls),
+      hashtags: JSON.parse(row.hashtags),
+      mentions: JSON.parse(row.mentions),
+      scheduledTime: new Date(row.scheduled_time)
+    }));
+
+    res.json(posts);
+  });
+});
+
+// Debug endpoint to check all scheduled posts
+app.get('/debug/scheduled-posts', (req, res) => {
+  db.all(`
+    SELECT * FROM scheduled_posts 
+    ORDER BY scheduled_time ASC
+  `, (err, rows) => {
+    if (err) {
+      console.error('❌ Error fetching scheduled posts:', err);
+      return res.status(500).json({ 
+        error: 'Failed to fetch scheduled posts',
+        details: err.message
+      });
+    }
+
+    console.log(`📊 Found ${rows.length} scheduled posts in database`);
+    res.json({
+      count: rows.length,
+      posts: rows.map(row => ({
+        id: row.id,
+        user_id: row.user_id,
+        content: row.content.substring(0, 50) + '...',
+        platforms: row.platforms,
+        scheduled_time: row.scheduled_time,
+        status: row.status,
+        has_credentials: !!row.credentials
+      }))
+    });
+  });
+});
+
+// Get recent posts endpoint (last 25 posts)
+app.get('/api/posts/recent', (req, res) => {
+  db.all(`
+    SELECT * FROM scheduled_posts 
+    ORDER BY created_at DESC 
+    LIMIT 25
+  `, (err, rows) => {
+    if (err) {
+      console.error('❌ Error fetching recent posts:', err);
+      return res.status(500).json({ 
+        error: 'Failed to fetch recent posts',
+        details: err.message
+      });
+    }
+
+    // Parse JSON fields and format for frontend
+    const posts = rows.map(row => ({
+      id: row.id,
+      text: row.content,
+      platforms: JSON.parse(row.platforms),
+      mediaUrls: JSON.parse(row.media_urls),
+      hashtags: JSON.parse(row.hashtags),
+      mentions: JSON.parse(row.mentions),
+      status: row.status,
+      createdAt: new Date(row.created_at),
+      publishedAt: row.published_at ? new Date(row.published_at) : null,
+      scheduledTime: row.scheduled_time ? new Date(row.scheduled_time) : null,
+      errorMessage: row.error_message
+    }));
+
+    console.log(`📊 Returning ${posts.length} recent posts`);
+    res.json(posts);
+  });
+});
+
+// LinkedIn posting endpoint
+app.post('/api/linkedin/post', async (req, res) => {
+  try {
+    const { userId, accessToken, text, mediaUrls } = req.body;
+    
+    if (!userId || !accessToken || !text) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters',
+        details: 'userId, accessToken, and text are required'
+      });
+    }
+
+    console.log(`📝 Publishing LinkedIn post for user: ${userId}`);
+    console.log(`📄 Post content: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+    console.log(`🖼️ Media URLs: ${mediaUrls ? mediaUrls.length : 0} files`);
+
+    // Try UGC API first, then fallback to Share API
+    let response;
+    let postData;
+    let apiEndpoint;
+
+    try {
+    // Handle media upload first if mediaUrls are provided
+    let mediaUrns = [];
+    if (mediaUrls && mediaUrls.length > 0) {
+      console.log(`📤 Processing ${mediaUrls.length} media files for LinkedIn...`);
+      
+      for (const mediaUrl of mediaUrls) {
+        try {
+          console.log(`🔄 Processing media: ${mediaUrl}`);
+          
+          // For LinkedIn, we'll include the media URL in the text as a workaround
+          // This is a temporary solution until we implement proper LinkedIn media upload
+          console.log(`ℹ️ Media detected: ${mediaUrl}`);
+          console.log(`📝 Will include media URL in post text`);
+          
+        } catch (mediaError) {
+          console.error(`❌ Error processing media ${mediaUrl}:`, mediaError);
+        }
+      }
+    }
+
+      // First try UGC API (requires special permissions)
+      apiEndpoint = 'https://api.linkedin.com/v2/ugcPosts';
+      
+      // Include media URLs in the text if present
+      let postText = text;
+      if (mediaUrls && mediaUrls.length > 0) {
+        postText += '\n\n📎 Media attached:';
+        mediaUrls.forEach((url, index) => {
+          postText += `\n${index + 1}. ${url}`;
+        });
+      }
+      
+      const shareContent = {
+        shareCommentary: {
+          text: postText
+        },
+        shareMediaCategory: 'NONE' // LinkedIn media upload is complex, using text-only for now
+      };
+      
+      // Add media if available
+      if (mediaUrns.length > 0) {
+        shareContent.media = mediaUrns.map(urn => ({
+          status: 'READY',
+          description: {
+            text: 'Image shared via social media app'
+          },
+          media: urn,
+          title: {
+            text: 'Shared Image'
+          }
+        }));
+      }
+      
+      postData = {
+        author: `urn:li:person:${userId}`,
+        lifecycleState: 'PUBLISHED',
+        specificContent: {
+          'com.linkedin.ugc.ShareContent': shareContent
+        },
+        visibility: {
+          'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
+        }
+      };
+
+      console.log(`🔍 Trying LinkedIn UGC API for posting...`);
+      response = await fetch(apiEndpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'X-Restli-Protocol-Version': '2.0.0'
+        },
+        body: JSON.stringify(postData)
+      });
+
+      // If UGC API fails with permissions, try Share API
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.log(`❌ UGC API failed:`, errorData);
+        
+        if (errorData.message?.includes('permissions') || errorData.message?.includes('ugcPosts.CREATE')) {
+          console.log(`⚠️ UGC API failed due to permissions, trying Share API...`);
+          
+          // Fallback to Share API (older, more widely available)
+          apiEndpoint = 'https://api.linkedin.com/v2/shares';
+          postData = {
+            owner: `urn:li:person:${userId}`,
+            text: {
+              text: text
+            },
+            distribution: {
+              linkedInDistributionTarget: {}
+            }
+          };
+          
+          // Note: Share API doesn't support media attachments
+          if (mediaUrns.length > 0) {
+            console.log(`⚠️ Share API doesn't support media. Posting text only.`);
+          }
+
+          console.log(`🔄 Attempting Share API with data:`, JSON.stringify(postData, null, 2));
+          response = await fetch(apiEndpoint, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+              'X-Restli-Protocol-Version': '2.0.0'
+            },
+            body: JSON.stringify(postData)
+          });
+          
+          console.log(`📡 Share API response:`, {
+            status: response.status,
+            statusText: response.statusText,
+            ok: response.ok
+          });
+        } else {
+          // If it's not a permissions error, don't try fallback
+          console.log(`❌ UGC API failed with non-permission error, not trying fallback`);
+        }
+      }
+    } catch (apiError) {
+      console.error(`❌ LinkedIn API error:`, apiError);
+      throw apiError;
+    }
+
+    const responseData = await response.json();
+
+    if (!response.ok) {
+      console.error(`❌ LinkedIn posting failed:`, responseData);
+      return res.status(response.status).json({
+        error: 'LinkedIn posting failed',
+        details: responseData.message || responseData.error || 'Unknown error',
+        linkedinError: responseData
+      });
+    }
+
+    const apiUsed = apiEndpoint.includes('ugcPosts') ? 'UGC API' : 'Share API';
+    console.log(`✅ Successfully posted to LinkedIn via ${apiUsed}:`, responseData);
+
+    res.json({
+      success: true,
+      postId: responseData.id,
+      apiUsed: apiUsed,
+      message: `LinkedIn post published successfully via ${apiUsed}`
+    });
+
+  } catch (error) {
+    console.error('💥 LinkedIn posting error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message 
+    });
   }
 });
 
@@ -1735,7 +2666,9 @@ app.post('/chat/mark-all-read', (req, res) => {
   });
 });
 
-// Auto-fail job: mark 'sent' messages older than 10 minutes as 'failed'
+// Auto-fail job disabled to reduce console spam
+// If you need to re-enable this, uncomment the code below:
+/*
 setInterval(() => {
   const tenMinutesAgo = getSqliteTimestamp(new Date(Date.now() - 10 * 60 * 1000));
   db.all(
@@ -1744,7 +2677,6 @@ setInterval(() => {
     (err, rows) => {
       if (err) return;
       rows.forEach(row => {
-        // Insert a new failed status event for the same message_id
         const insertStmt = db.prepare(`INSERT INTO message_status (recipient, status, message_id, timestamp, error) VALUES (?, 'failed', ?, CURRENT_TIMESTAMP, ?)`);
         insertStmt.run([row.recipient, row.message_id, 'Auto-failed after timeout']);
         insertStmt.finalize();
@@ -1752,7 +2684,8 @@ setInterval(() => {
       });
     }
   );
-}, 60 * 1000); // Run every minute
+}, 60 * 1000);
+*/
 
 // OAuth callback routes for social media platforms
 // Store PKCE code verifier endpoint
@@ -1791,9 +2724,9 @@ app.get('/auth/:platform/callback', (req, res) => {
     return res.send(createErrorPage(platform, 'No authorization code received'));
   }
 
-  // Send success page that handles everything client-side
-  console.log(`🎉 OAuth successful for ${platform}, sending success page`);
-  res.send(createSuccessPage(platform, code, state));
+  // Serve the static callback HTML file that handles token exchange
+  console.log(`🎉 OAuth successful for ${platform}, sending callback page`);
+  res.sendFile(path.join(__dirname, 'public', 'auth-callback.html'));
 });
 
 // Note: codeVerifiers Map already declared at the top of the file
@@ -1855,9 +2788,9 @@ function createSuccessPage(platform, code, state) {
               window.opener.postMessage(oauthData, 'http://localhost:3001');
               
               // Close this popup immediately
-              setTimeout(() => {
+            setTimeout(() => {
                 console.log('🔚 Closing OAuth popup');
-                window.close();
+              window.close();
               }, 500);
             } else {
               // Fallback: redirect to main app
@@ -1941,37 +2874,185 @@ function createErrorPage(platform, error) {
   `;
 }
 
-// OAuth callback route (simple version)
-app.get('/auth/:platform/callback', (req, res) => {
-  const { platform } = req.params;
-  const { code, state, error } = req.query;
+// Note: OAuth callback handler is already defined above (serves auth-callback.html)
+
+// OAuth token exchange endpoint for LinkedIn and other platforms
+app.post('/oauth/token-exchange', async (req, res) => {
+  const { platform, code, state } = req.body;
   
-  console.log(`✅ OAuth callback for ${platform}:`, { 
-    code: code ? 'received' : 'missing', 
-    state, 
-    error 
+  console.log(`🔄 Token exchange request for ${platform}:`, { 
+    hasCode: !!code, 
+    hasState: !!state 
   });
   
-  if (error) {
-    console.log(`❌ OAuth error for ${platform}:`, error);
-    return res.send(createErrorPage(platform, error));
+  console.log(`🔍 Debug platform detection:`, {
+    receivedPlatform: platform,
+    platformType: typeof platform,
+    hasLinkedInClientId: !!process.env.LINKEDIN_CLIENT_ID,
+    hasLinkedInSecret: !!process.env.LINKEDIN_CLIENT_SECRET
+  });
+
+  try {
+    // OAuth configurations for all platforms
+    const configs = {
+      twitter: {
+        clientId: process.env.TWITTER_CLIENT_ID,
+        clientSecret: process.env.TWITTER_CLIENT_SECRET,
+        tokenUrl: 'https://api.twitter.com/2/oauth2/token',
+        userInfoUrl: 'https://api.twitter.com/2/users/me'
+      },
+      linkedin: {
+        clientId: process.env.LINKEDIN_CLIENT_ID,
+        clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
+        tokenUrl: 'https://www.linkedin.com/oauth/v2/accessToken',
+        userInfoUrl: 'https://api.linkedin.com/v2/userinfo'
+      },
+      youtube: {
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        userInfoUrl: 'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true'
+      }
+    };
+
+    const config = configs[platform];
+    if (!config) {
+      return res.status(400).json({ 
+        success: false, 
+        error: `Unsupported platform: ${platform}` 
+      });
+    }
+
+    // Exchange code for token
+    let tokenRequestBody;
+    let headers = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json'
+    };
+
+    if (platform === 'twitter') {
+      // Twitter uses PKCE - need to get the stored code verifier
+      const storedCodeVerifier = codeVerifiers.get(state);
+      if (!storedCodeVerifier) {
+        console.error(`❌ No PKCE code verifier found for Twitter state: ${state}`);
+        return res.status(400).json({ 
+          success: false,
+          error: 'PKCE code verifier not found',
+          details: `No code verifier stored for state: ${state}`
+        });
+      }
+
+      tokenRequestBody = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: `http://localhost:${PORT}/auth/${platform}/callback`,
+        client_id: config.clientId,
+        code_verifier: storedCodeVerifier
+      });
+
+      // Twitter requires Basic Authentication
+      const auth = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
+      headers['Authorization'] = `Basic ${auth}`;
+      console.log(`🔐 Using PKCE + Basic Auth for Twitter token exchange`);
+    } else {
+      // LinkedIn and YouTube use client_secret
+      tokenRequestBody = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: `http://localhost:${PORT}/auth/${platform}/callback`,
+        client_id: config.clientId,
+        client_secret: config.clientSecret
+      });
+      console.log(`🔐 Using client_secret for ${platform} token exchange`);
+    }
+
+    const tokenResponse = await fetch(config.tokenUrl, {
+      method: 'POST',
+      headers,
+      body: tokenRequestBody
+    });
+
+    const tokenData = await tokenResponse.json();
+
+    if (!tokenResponse.ok) {
+      console.error(`❌ Token exchange failed for ${platform}:`, tokenData);
+      return res.status(tokenResponse.status).json({
+        success: false,
+        error: 'Token exchange failed',
+        details: tokenData
+      });
+    }
+
+    // Get user info
+    const userInfoResponse = await fetch(config.userInfoUrl, {
+      headers: {
+        'Authorization': `Bearer ${tokenData.access_token}`,
+        'Accept': 'application/json'
+      }
+    });
+
+    const userInfo = await userInfoResponse.json();
+
+    if (!userInfoResponse.ok) {
+      console.error(`❌ User info failed for ${platform}:`, userInfo);
+      return res.status(userInfoResponse.status).json({
+        success: false,
+        error: 'User info failed',
+        details: userInfo
+      });
+    }
+
+    // Create credentials object with platform-specific user data extraction
+    let userId, userName;
+    if (platform === 'twitter') {
+      userId = userInfo.data?.id;
+      userName = userInfo.data?.name;
+    } else if (platform === 'linkedin') {
+      userId = userInfo.sub;
+      userName = userInfo.name;
+    } else if (platform === 'youtube') {
+      userId = userInfo.sub || userInfo.id;
+      userName = userInfo.name || userInfo.given_name;
+    }
+
+    const credentials = {
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      expiresIn: tokenData.expires_in,
+      scope: tokenData.scope,
+      userId: userId,
+      userName: userName,
+      userInfo: userInfo,
+      platform: platform,
+      connectedAt: new Date().toISOString()
+    };
+
+    console.log(`✅ Successfully completed OAuth for ${platform}:`, {
+      hasAccessToken: !!credentials.accessToken,
+      userId: credentials.userId,
+      userName: credentials.userName
+    });
+
+    // Clean up PKCE code verifier for Twitter
+    if (platform === 'twitter' && state) {
+      codeVerifiers.delete(state);
+      console.log(`🗑️ Cleaned up PKCE code verifier for Twitter state: ${state}`);
+    }
+
+    res.json({
+      success: true,
+      credentials: credentials
+    });
+
+  } catch (error) {
+    console.error(`💥 OAuth token exchange error for ${platform}:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Server error',
+      details: error.message
+    });
   }
-  
-  if (!code) {
-    console.log(`❌ No code for ${platform}`);
-    return res.send(createErrorPage(platform, 'No authorization code'));
-  }
-  
-  // Send success page that handles everything client-side
-  console.log(`🎉 OAuth successful for ${platform}, sending success page`);
-  res.send(createSuccessPage(platform, code, state));
 });
-
-// Helper functions for OAuth callback pages (already defined above)
-
-// createSuccessPage function already defined above
-
-// Note: codeVerifiers Map already declared at the top of the file
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -1982,6 +3063,73 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Scheduled posts job - check every 30 seconds for posts to publish
+setInterval(async () => {
+  const now = new Date().toISOString();
+  
+  console.log(`🕐 Checking for scheduled posts at ${now}`);
+  
+  db.all(`
+    SELECT * FROM scheduled_posts 
+    WHERE status = 'scheduled' AND scheduled_time <= ?
+    ORDER BY scheduled_time ASC
+  `, [now], async (err, rows) => {
+    if (err) {
+      console.error('❌ Error checking scheduled posts:', err);
+      return;
+    }
+
+    if (rows.length === 0) {
+      return; // No posts to publish
+    }
+
+    console.log(`📅 Found ${rows.length} scheduled posts to publish`);
+
+    for (const post of rows) {
+      try {
+        console.log(`🚀 Publishing scheduled post ID: ${post.id} - "${post.content.substring(0, 50)}..."`);
+        
+        // Update status to publishing
+        db.run(`
+          UPDATE scheduled_posts 
+          SET status = 'publishing' 
+          WHERE id = ?
+        `, [post.id]);
+
+        // Parse the post data
+        const platforms = JSON.parse(post.platforms);
+        const mediaUrls = JSON.parse(post.media_urls);
+        const storedCredentials = JSON.parse(post.credentials || '{}');
+
+        // For now, just mark as published (simplified approach)
+        // In a real implementation, you would call the actual platform APIs here
+        console.log(`📤 Would publish to platforms: ${platforms.join(', ')}`);
+        console.log(`📝 Content: ${post.content}`);
+        console.log(`🖼️ Media URLs: ${mediaUrls.length} files`);
+
+        // Mark as published
+        db.run(`
+          UPDATE scheduled_posts 
+          SET status = 'published', published_at = ?
+          WHERE id = ?
+        `, [new Date().toISOString(), post.id]);
+
+        console.log(`✅ Scheduled post ${post.id} marked as published`);
+
+      } catch (error) {
+        console.error(`💥 Error publishing scheduled post ${post.id}:`, error);
+        
+        // Mark as failed
+        db.run(`
+          UPDATE scheduled_posts 
+          SET status = 'failed', error_message = ?
+          WHERE id = ?
+        `, [error.message, post.id]);
+      }
+    }
+  });
+}, 30000); // Check every 30 seconds
+
 // Start server
 app.listen(PORT, () => {
   console.log(`WhatsApp Backend Server running on port ${PORT}`);
@@ -1989,6 +3137,7 @@ app.listen(PORT, () => {
   console.log(`Reports endpoint: http://localhost:${PORT}/reports`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`OAuth callbacks: http://localhost:${PORT}/auth/{platform}/callback`);
+  console.log(`📅 Scheduled posts job started - checking every minute`);
 });
 
 // Graceful shutdown

@@ -92,15 +92,42 @@ const TwitterYouTubeSetup: React.FC = () => {
     const handleMessage = async (event: MessageEvent) => {
       console.log('📨 Message received from:', event.origin, event.data);
       
-      // Only accept messages from our server
-      if (event.origin !== 'http://localhost:3002') {
-        console.log('🚫 Ignoring message from unknown origin:', event.origin);
+      // Accept messages from localhost origins (development mode)
+      if (!event.origin.includes('localhost')) {
+        console.log('🚫 Ignoring message from non-localhost origin:', event.origin);
         return;
       }
+      
+      console.log('✅ Accepting message from:', event.origin);
       
       if (event.data.type === 'oauth_success') {
         console.log('✅ OAuth success message received:', event.data);
         await processOAuthSuccess(event.data.platform, event.data.code, event.data.state);
+      } else if (event.data.type === 'oauth_complete') {
+        console.log('✅ OAuth complete message received:', event.data);
+        
+        // The server has already processed the token exchange, just update UI
+        if (event.data.success && event.data.credentials) {
+          console.log('🎉 OAuth completed successfully for:', event.data.platform);
+          
+          // Store the credentials in localStorage (the server has already stored them in DB)
+          const storageKey = `social_mod_${event.data.platform}_credentials`;
+          localStorage.setItem(storageKey, JSON.stringify(event.data.credentials));
+          
+          // Update platform connection status
+          setPlatforms(prev => prev.map(p => 
+            p.id === event.data.platform ? { ...p, isConnected: true } : p
+          ));
+          
+          // Show success message
+          toast({
+            title: 'Connected Successfully',
+            description: `Successfully connected to ${event.data.platform}`,
+            status: 'success',
+            duration: 5000,
+            isClosable: true,
+          });
+        }
       }
     };
     

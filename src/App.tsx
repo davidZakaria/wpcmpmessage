@@ -15,8 +15,20 @@ import {
   AlertIcon,
   Collapse,
   useDisclosure,
+  Badge,
+  Avatar,
+  Menu,
+  MenuButton,
+  MenuList,
+  MenuItem,
+  MenuDivider,
+  Icon,
+  useToast
 } from '@chakra-ui/react';
+import { FaUser, FaSignOutAlt, FaCog, FaSignInAlt } from 'react-icons/fa';
 import Sidebar from './Sidebar';
+import LoginModal from './components/LoginModal';
+import { userManagementService, User } from './services/userManagementService';
 
 // Lazy load components for better performance
 const AnalyticsSection = lazy(() => import('./AnalyticsSection'));
@@ -35,10 +47,17 @@ function App() {
   const [phoneNumberId, setPhoneNumberId] = useState('725999993024554');
   const [unreadCount] = useState(0);
   
-  // Settings panel state
+  // User authentication state
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  
+  // Modal states
   const { isOpen: isSettingsOpen, onToggle: onSettingsToggle } = useDisclosure();
+  const { isOpen: isLoginOpen, onOpen: onLoginOpen, onClose: onLoginClose } = useDisclosure();
+  
+  const toast = useToast();
 
-  // Load credentials from localStorage on mount
+  // Load credentials and check authentication on mount
   useEffect(() => {
     const savedAccessToken = localStorage.getItem('whatsapp_access_token');
     const savedPhoneNumberId = localStorage.getItem('whatsapp_phone_number_id');
@@ -50,6 +69,14 @@ function App() {
     if (savedPhoneNumberId) {
       setPhoneNumberId(savedPhoneNumberId);
       console.log('✅ Loaded saved phone number ID from localStorage');
+    }
+
+    // Check if user is already authenticated
+    const user = userManagementService.getCurrentUser();
+    if (user && userManagementService.isAuthenticated()) {
+      setCurrentUser(user);
+      setIsAuthenticated(true);
+      console.log('✅ User session restored:', user.name);
     }
   }, []);
 
@@ -90,6 +117,34 @@ function App() {
     } else if (['moderation', 'platform-testing', 'twitter-youtube-setup', 'demo-mode'].includes(section)) {
       setActiveHub('social');
     }
+  };
+
+  // Authentication handlers
+  const handleLoginSuccess = (user: User) => {
+    setCurrentUser(user);
+    setIsAuthenticated(true);
+    
+    toast({
+      title: 'Welcome!',
+      description: `Signed in as ${user.name} (${user.role})`,
+      status: 'success',
+      duration: 3000,
+      isClosable: true,
+    });
+  };
+
+  const handleLogout = async () => {
+    await userManagementService.logout();
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    
+    toast({
+      title: 'Signed Out',
+      description: 'You have been successfully signed out',
+      status: 'info',
+      duration: 3000,
+      isClosable: true,
+    });
   };
 
   // Render the active section with lazy loading
@@ -167,12 +222,52 @@ function App() {
         
         {/* Main Content Area */}
         <Box flex="1" ml="280px" overflow="auto" bg="gray.50">
-          {/* Settings Panel */}
-          <Box position="absolute" top={4} right={4} zIndex={999}>
-            <Button onClick={onSettingsToggle} size="sm" colorScheme="blue" variant="outline">
-              ⚙️ Settings
-            </Button>
-          </Box>
+          {/* Header with User Menu */}
+          <Flex position="absolute" top={4} right={4} zIndex={999} gap={3}>
+            {isAuthenticated && currentUser ? (
+              <Menu>
+                <MenuButton as={Button} variant="ghost" size="sm">
+                  <HStack spacing={2}>
+                    <Avatar size="sm" name={currentUser.name} />
+                    <VStack spacing={0} align="start">
+                      <Text fontSize="sm" fontWeight="medium">
+                        {currentUser.name}
+                      </Text>
+                      <Badge size="sm" colorScheme="blue" variant="subtle">
+                        {currentUser.role}
+                      </Badge>
+                    </VStack>
+                  </HStack>
+                </MenuButton>
+                <MenuList>
+                  <MenuItem icon={<FaUser />}>
+                    Profile
+                  </MenuItem>
+                  <MenuItem icon={<FaCog />} onClick={onSettingsToggle}>
+                    Settings
+                  </MenuItem>
+                  <MenuDivider />
+                  <MenuItem icon={<FaSignOutAlt />} onClick={handleLogout}>
+                    Sign Out
+                  </MenuItem>
+                </MenuList>
+              </Menu>
+            ) : (
+              <HStack spacing={2}>
+                <Button 
+                  onClick={onLoginOpen} 
+                  size="sm" 
+                  colorScheme="blue" 
+                  leftIcon={<FaSignInAlt />}
+                >
+                  Sign In
+                </Button>
+                <Button onClick={onSettingsToggle} size="sm" variant="outline">
+                  <Icon as={FaCog} />
+                </Button>
+              </HStack>
+            )}
+          </Flex>
 
           <Collapse in={isSettingsOpen}>
             <Box bg="white" p={6} m={4} borderRadius="md" shadow="md" border="1px solid" borderColor="gray.200">
@@ -242,6 +337,13 @@ function App() {
             {renderActiveSection()}
           </Box>
         </Box>
+
+        {/* Login Modal */}
+        <LoginModal
+          isOpen={isLoginOpen}
+          onClose={onLoginClose}
+          onLoginSuccess={handleLoginSuccess}
+        />
       </Flex>
     </ChakraProvider>
   );

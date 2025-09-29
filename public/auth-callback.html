@@ -49,7 +49,9 @@
     </div>
 
     <script>
-        console.log('OAuth callback page loaded');
+        console.log('🚨 CALLBACK PAGE LOADED - If you see this, the popup reached the server!');
+        console.log('🚨 CALLBACK PAGE LOADED - If you see this, the popup reached the server!');
+        console.log('🚨 CALLBACK PAGE LOADED - If you see this, the popup reached the server!');
         
         // Get URL parameters
         const urlParams = new URLSearchParams(window.location.search);
@@ -58,7 +60,15 @@
         const error = urlParams.get('error');
         const platform = window.location.pathname.split('/')[2]; // Extract platform from URL
         
-        console.log('OAuth callback data:', { code: code ? 'received' : 'missing', state, error, platform });
+        console.log('🔍 OAuth callback page details:', {
+            url: window.location.href,
+            pathname: window.location.pathname,
+            pathSplit: window.location.pathname.split('/'),
+            detectedPlatform: platform,
+            code: code ? 'received' : 'missing', 
+            state, 
+            error
+        });
         
         if (error) {
             document.querySelector('.container').innerHTML = `
@@ -70,35 +80,123 @@
                 window.close();
             }, 3000);
         } else if (code) {
-            // Send message to parent window
-            if (window.opener) {
-                console.log('Sending message to parent window...');
-                const message = {
-                    type: 'oauth_callback',
-                    platform: platform || 'twitter',
-                    code: code,
-                    state: state
-                };
-                
-                console.log('Sending message:', message);
-                window.opener.postMessage(message, window.location.origin);
-                
-                // Also try sending to the frontend origin
-                try {
-                    window.opener.postMessage(message, 'http://localhost:3002');
-                    console.log('Also sent to localhost:3002');
-                } catch (e) {
-                    console.log('Could not send to localhost:3002:', e);
-                }
-            } else {
-                console.log('No window.opener found');
-            }
+            console.log(`🔄 Processing OAuth code for platform: ${platform}`);
+            console.log(`🔍 Platform check: ${platform} === 'linkedin'? ${platform === 'linkedin'}`);
+            console.log(`🔍 Platform check: ${platform} === 'youtube'? ${platform === 'youtube'}`);
             
-            // Close window after delay
-            setTimeout(() => {
-                console.log('Closing OAuth popup window');
-                window.close();
-            }, 2000);
+            // For LinkedIn and other platforms, do server-side token exchange
+            if (platform === 'linkedin' || platform === 'youtube') {
+                console.log(`🚨 LINKEDIN TOKEN EXCHANGE STARTING FOR: ${platform}`);
+                console.log(`✅ Using server-side token exchange for ${platform}`);
+                
+                // Call our server's token exchange endpoint
+                console.log(`📡 Calling token exchange for ${platform}...`);
+                fetch('/oauth/token-exchange', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        platform: platform,
+                        code: code,
+                        state: state
+                    })
+                })
+                .then(response => {
+                    console.log(`📡 Token exchange response for ${platform}:`, {
+                        status: response.status,
+                        ok: response.ok,
+                        statusText: response.statusText
+                    });
+                    return response.json();
+                })
+                .then(data => {
+                    console.log(`✅ Token exchange data for ${platform}:`, data);
+                    
+                    if (data.success && data.credentials) {
+                        // Store credentials in localStorage
+                        localStorage.setItem(`social_mod_${platform}_credentials`, JSON.stringify(data.credentials));
+                        console.log(`💾 Stored credentials for ${platform}`);
+                        
+                        // Store success flag
+                        localStorage.setItem(`oauth_result_${platform}`, JSON.stringify({
+                            success: true,
+                            platform: platform,
+                            timestamp: Date.now(),
+                            credentials: data.credentials
+                        }));
+                        
+                        // Send success message to parent
+                        if (window.opener) {
+                            const message = {
+                                type: 'oauth_complete',
+                                platform: platform,
+                                success: true,
+                                credentials: data.credentials
+                            };
+                            console.log('📨 About to send success message to parent:', message);
+                            console.log('📨 Parent window exists:', !!window.opener);
+                            console.log('📨 Parent window closed?', window.opener.closed);
+                            
+                            window.opener.postMessage(message, '*');
+                            console.log('📨 Success message sent to parent!');
+                            
+                            // Give a moment for the message to be received
+                            setTimeout(() => {
+                                console.log('📨 Closing popup after message sent');
+                            }, 1000);
+                        } else {
+                            console.error('❌ No parent window (window.opener) found!');
+                        }
+                        
+                        // Update UI
+                        document.querySelector('.container').innerHTML = `
+                            <div style="color: green; font-size: 24px; margin-bottom: 20px;">✅ ${platform} Connected!</div>
+                            <p>Successfully connected to ${platform}</p>
+                            <p>This window will close automatically.</p>
+                        `;
+                    } else {
+                        throw new Error(data.error || 'Token exchange failed');
+                    }
+                })
+                .catch(error => {
+                    console.error(`❌ Token exchange failed for ${platform}:`, error);
+                    document.querySelector('.container').innerHTML = `
+                        <div style="color: red; font-size: 24px; margin-bottom: 20px;">❌ Connection Failed</div>
+                        <p>Error: ${error.message}</p>
+                        <p>This window will close in 5 seconds.</p>
+                    `;
+                })
+                .finally(() => {
+                    setTimeout(() => {
+                        console.log('Closing OAuth popup window');
+                        window.close();
+                    }, 3000);
+                });
+                
+            } else {
+                // For Twitter and other platforms that use different flow
+                if (window.opener) {
+                    console.log('Sending message to parent window...');
+                    const message = {
+                        type: 'oauth_callback',
+                        platform: platform || 'twitter',
+                        code: code,
+                        state: state
+                    };
+                    
+                    console.log('Sending message:', message);
+                    window.opener.postMessage(message, 'http://localhost:3001');
+                } else {
+                    console.log('No window.opener found');
+                }
+                
+                // Close window after delay
+                setTimeout(() => {
+                    console.log('Closing OAuth popup window');
+                    window.close();
+                }, 2000);
+            }
         } else {
             document.querySelector('.container').innerHTML = `
                 <div style="color: orange; font-size: 24px; margin-bottom: 20px;">⚠️ No Authorization Code</div>

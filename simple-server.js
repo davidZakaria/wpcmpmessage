@@ -30,6 +30,12 @@ const getOAuthConfig = (platform) => {
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       tokenUrl: 'https://oauth2.googleapis.com/token',
       userInfoUrl: 'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true'
+    },
+    linkedin: {
+      clientId: process.env.LINKEDIN_CLIENT_ID,
+      clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
+      tokenUrl: 'https://www.linkedin.com/oauth/v2/accessToken',
+      userInfoUrl: 'https://api.linkedin.com/v2/userinfo'
     }
   };
   return configs[platform];
@@ -54,9 +60,16 @@ const exchangeCodeForToken = async (platform, code, state) => {
   if (platform === 'twitter') {
     // Get stored code verifier
     const codeVerifier = codeVerifiers.get(state);
+    console.log(`🔑 Looking for code verifier with state: ${state}`);
+    console.log(`📋 Available states in storage:`, Array.from(codeVerifiers.keys()));
+    
     if (!codeVerifier) {
-      throw new Error('Code verifier not found for state: ' + state);
+      console.error(`❌ Code verifier not found for state: ${state}`);
+      console.error(`💾 Current storage contents:`, Object.fromEntries(codeVerifiers));
+      throw new Error(`Code verifier not found for state: ${state}. Available states: ${Array.from(codeVerifiers.keys()).join(', ')}`);
     }
+    
+    console.log(`✅ Found code verifier for state: ${state} (length: ${codeVerifier.length})`);
     
     tokenRequestBody = new URLSearchParams({
       grant_type: 'authorization_code',
@@ -68,8 +81,9 @@ const exchangeCodeForToken = async (platform, code, state) => {
     
     // Clean up code verifier
     codeVerifiers.delete(state);
+    console.log(`🧹 Cleaned up code verifier for state: ${state}`);
   } else {
-    // Standard OAuth2 flow for other platforms
+    // Standard OAuth2 flow for other platforms (LinkedIn, YouTube, etc.)
     tokenRequestBody = new URLSearchParams({
       grant_type: 'authorization_code',
       code,
@@ -77,14 +91,26 @@ const exchangeCodeForToken = async (platform, code, state) => {
       client_id: config.clientId,
       client_secret: config.clientSecret
     });
+    
+    console.log(`🔄 Using standard OAuth2 flow for ${platform}`);
+  }
+
+  // Prepare headers - LinkedIn needs Basic Auth like Twitter
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Accept': 'application/json'
+  };
+
+  // Add Basic Authentication for platforms that require it
+  if (platform === 'twitter' || platform === 'linkedin') {
+    const credentials = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
+    headers['Authorization'] = `Basic ${credentials}`;
+    console.log(`🔐 Added Basic Auth header for ${platform}`);
   }
 
   const response = await fetch(config.tokenUrl, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'application/json'
-    },
+    headers,
     body: tokenRequestBody
   });
 
@@ -130,12 +156,25 @@ const getUserInfo = async (platform, accessToken) => {
 };
 
 // Store code verifier endpoint
-app.post('/auth/:platform/store-verifier', (req, res) => {
-  const { platform } = req.params;
-  const { state, codeVerifier } = req.body;
+app.post('/oauth/store-verifier', (req, res) => {
+  const { platform, state, codeVerifier } = req.body;
   
-  console.log(`💾 Storing code verifier for ${platform}:`, { state, hasVerifier: !!codeVerifier });
+  console.log(`💾 Storing code verifier for ${platform}:`, { 
+    state, 
+    hasVerifier: !!codeVerifier,
+    verifierLength: codeVerifier?.length || 0
+  });
+  
+  if (!state || !codeVerifier) {
+    console.error(`❌ Missing required data:`, { state: !!state, codeVerifier: !!codeVerifier });
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Missing state or codeVerifier' 
+    });
+  }
+  
   codeVerifiers.set(state, codeVerifier);
+  console.log(`✅ Successfully stored code verifier for state: ${state}`);
   
   res.json({ success: true });
 });
@@ -281,15 +320,27 @@ const createSuccessPageWithCredentials = (platform, credentials) => {
             console.log('⚠️ Success flag storage failed:', e);
           }
           
-          // Redirect parent to show success
+          // Send message to parent window
           try {
             if (window.opener && !window.opener.closed) {
+              const message = {
+                type: 'oauth_success',
+                platform: '${platform}',
+                code: 'success',
+                state: 'completed',
+                credentials: credentialsData
+              };
+              
+              window.opener.postMessage(message, 'http://localhost:3001');
+              console.log('📨 Sent success message to parent window:', message);
+              
+              // Also redirect as backup
               const url = 'http://localhost:3001?oauth_success=${platform}&user=${encodeURIComponent(userName)}';
               window.opener.location.href = url;
               console.log('🔄 Redirected parent to show success');
             }
           } catch (e) {
-            console.log('⚠️ Redirect failed:', e);
+            console.log('⚠️ Communication with parent failed:', e);
           }
           
           // Close window
@@ -363,9 +414,12 @@ app.get('/api/twitter/content', async (req, res) => {
       for (const tweet of tweetsData.data) {
         const tweetWithReplies = { ...tweet, replies: [] };
         
-        // Fetch replies to this tweet
+        // Fetch replies to this tweet using multiple approaches
         try {
-          const repliesResponse = await fetch(
+          console.log(`🔍 Searching for replies to tweet ${tweet.id} (conversation_id: ${tweet.conversation_id})`);
+          
+          // Method 1: Search by conversation_id (excluding original author)
+          let repliesResponse = await fetch(
             `https://api.twitter.com/2/tweets/search/recent?query=conversation_id:${tweet.conversation_id} -from:${userId}&max_results=100&tweet.fields=created_at,author_id,public_metrics,in_reply_to_user_id&expansions=author_id&user.fields=name,username,profile_image_url,verified`,
             {
               headers: {
@@ -375,9 +429,44 @@ app.get('/api/twitter/content', async (req, res) => {
             }
           );
           
+          let repliesData = null;
+          
           if (repliesResponse.ok) {
-            const repliesData = await repliesResponse.json();
-            tweetWithReplies.replies = repliesData.data || [];
+            repliesData = await repliesResponse.json();
+            console.log(`📊 Method 1 result: ${repliesData.data?.length || 0} replies found`);
+          } else {
+            const errorData = await repliesResponse.json();
+            console.log(`❌ Method 1 failed (${repliesResponse.status}):`, errorData);
+            
+            // Method 2: Try without excluding original author
+            console.log(`🔍 Trying Method 2: Search without excluding original author`);
+            repliesResponse = await fetch(
+              `https://api.twitter.com/2/tweets/search/recent?query=conversation_id:${tweet.conversation_id}&max_results=100&tweet.fields=created_at,author_id,public_metrics,in_reply_to_user_id&expansions=author_id&user.fields=name,username,profile_image_url,verified`,
+              {
+                headers: {
+                  'Authorization': `Bearer ${accessToken}`,
+                  'Accept': 'application/json'
+                }
+              }
+            );
+            
+            if (repliesResponse.ok) {
+              repliesData = await repliesResponse.json();
+              console.log(`📊 Method 2 result: ${repliesData.data?.length || 0} replies found`);
+              
+              // Filter out the original tweet manually
+              if (repliesData.data) {
+                repliesData.data = repliesData.data.filter(reply => reply.id !== tweet.id);
+                console.log(`📊 After filtering original tweet: ${repliesData.data.length} replies`);
+              }
+            } else {
+              const errorData2 = await repliesResponse.json();
+              console.log(`❌ Method 2 also failed (${repliesResponse.status}):`, errorData2);
+            }
+          }
+          
+          if (repliesData && repliesData.data) {
+            tweetWithReplies.replies = repliesData.data;
             
             // Merge reply authors into includes
             if (repliesData.includes?.users) {
@@ -392,10 +481,22 @@ app.get('/api/twitter/content', async (req, res) => {
               }
             }
             
-            console.log(`📬 Found ${tweetWithReplies.replies.length} replies for tweet ${tweet.id}`);
+            console.log(`✅ Final result: ${tweetWithReplies.replies.length} replies for tweet ${tweet.id}`);
+            
+            // Log first few reply contents for debugging
+            if (tweetWithReplies.replies.length > 0) {
+              console.log(`📝 Sample replies:`, tweetWithReplies.replies.slice(0, 2).map(r => ({
+                id: r.id,
+                text: r.text?.substring(0, 50) + '...',
+                author_id: r.author_id
+              })));
+            }
+          } else {
+            console.log(`❌ No replies data found for tweet ${tweet.id}`);
           }
+          
         } catch (replyError) {
-          console.warn(`⚠️ Could not fetch replies for tweet ${tweet.id}:`, replyError.message);
+          console.error(`💥 Error fetching replies for tweet ${tweet.id}:`, replyError.message);
         }
         
         tweetsWithReplies.push(tweetWithReplies);
