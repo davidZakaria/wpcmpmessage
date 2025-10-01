@@ -40,7 +40,8 @@ class WebSocketService {
   private heartbeatInterval: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.connect();
+    // Disabled - no WebSocket server available
+    // this.connect();
   }
 
   // Connect to WebSocket server
@@ -50,7 +51,7 @@ class WebSocketService {
     }
 
     this.isConnecting = true;
-    const wsUrl = `ws://localhost:3001/ws`; // WebSocket endpoint
+    const wsUrl = `ws://localhost:3002/ws`; // WebSocket endpoint
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -226,7 +227,7 @@ class WebSocketService {
           timestamp: new Date().toISOString()
         });
       }
-    }, 30000); // Send heartbeat every 30 seconds
+    }, 60000); // Send heartbeat every 60 seconds (reduced frequency)
   }
 
   private stopHeartbeat(): void {

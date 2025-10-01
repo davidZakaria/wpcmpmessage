@@ -43,7 +43,10 @@ interface ModerationContext {
 class AIModerationService {
   private readonly apiKey: string;
   private readonly baseUrl = 'https://api.openai.com/v1';
-  private readonly model = 'gpt-4-turbo-preview';
+  private readonly model = 'gpt-4o-mini';
+  private quotaExceeded = false;
+  private lastQuotaCheck = 0;
+  private readonly quotaCheckInterval = 60000; // Check quota status every minute
 
   constructor() {
     this.apiKey = import.meta.env.VITE_OPENAI_API_KEY || '';
@@ -63,6 +66,13 @@ class AIModerationService {
     customRules: any[] = []
   ): Promise<AIAnalysisResult> {
     if (!this.apiKey) {
+      return this.fallbackAnalysis(content);
+    }
+
+    // Check if quota was exceeded recently
+    const now = Date.now();
+    if (this.quotaExceeded && (now - this.lastQuotaCheck) < this.quotaCheckInterval) {
+      console.log('💳 Using fallback analysis (OpenAI quota exceeded)');
       return this.fallbackAnalysis(content);
     }
 
@@ -95,7 +105,18 @@ class AIModerationService {
       });
 
       if (!response.ok) {
-        throw new Error(`OpenAI API error: ${response.status}`);
+        const errorText = await response.text();
+        console.error(`❌ OpenAI API error ${response.status}:`, errorText);
+        
+        // Handle quota exceeded errors
+        if (response.status === 429 || errorText.includes('insufficient_quota') || errorText.includes('quota')) {
+          this.quotaExceeded = true;
+          this.lastQuotaCheck = Date.now();
+          console.warn('💳 OpenAI quota exceeded. Switching to fallback analysis for better performance.');
+          return this.fallbackAnalysis(content);
+        }
+        
+        throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
       }
 
       const data = await response.json();
@@ -110,9 +131,32 @@ class AIModerationService {
 
       return analysis;
     } catch (error) {
-      console.error('❌ AI analysis failed:', error);
+      // Check if it's a quota error
+      if (error instanceof Error && (error.message.includes('quota') || error.message.includes('429'))) {
+        this.quotaExceeded = true;
+        this.lastQuotaCheck = Date.now();
+        console.warn('💳 OpenAI quota exceeded. Using fallback analysis.');
+      } else {
+        console.error('❌ AI analysis failed:', error);
+      }
       return this.fallbackAnalysis(content);
     }
+  }
+
+  // Reset quota status (call this if user adds credits)
+  resetQuotaStatus(): void {
+    this.quotaExceeded = false;
+    this.lastQuotaCheck = 0;
+    console.log('✅ OpenAI quota status reset. AI analysis re-enabled.');
+  }
+
+  // Check if AI analysis is available
+  isAIAvailable(): boolean {
+    if (!this.apiKey) return false;
+    if (!this.quotaExceeded) return true;
+    
+    const now = Date.now();
+    return (now - this.lastQuotaCheck) >= this.quotaCheckInterval;
   }
 
   // Build comprehensive analysis prompt

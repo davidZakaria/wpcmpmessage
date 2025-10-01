@@ -111,8 +111,18 @@ const SocialChatTab: React.FC<SocialChatTabProps> = ({ connectedPlatforms }) => 
   };
 
   // Load conversations when component mounts or platform selection changes
+  // Use a ref to track if we've already loaded for these platforms to prevent infinite loops
+  const loadedPlatformsRef = useRef<string>('');
+  
   useEffect(() => {
-    loadConversations();
+    const platformsKey = [...connectedPlatforms].sort().join(',');
+    const currentKey = `${platformsKey}-${selectedPlatform}`;
+    
+    // Only reload if the platforms or selected platform actually changed
+    if (loadedPlatformsRef.current !== currentKey) {
+      loadedPlatformsRef.current = currentKey;
+      loadConversations();
+    }
   }, [connectedPlatforms, selectedPlatform]);
 
   // Also load conversations when component first mounts, regardless of connectedPlatforms

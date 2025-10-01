@@ -65,7 +65,11 @@ class ContentFetcherService {
         const content = await this.fetchPlatformContent(platform, options);
         allContent.push(...content);
       } catch (error) {
-        console.error(`Failed to fetch content from ${platform}:`, error);
+        if (error instanceof Error && error.message.includes('rate limit')) {
+          console.warn(`⏰ ${platform} rate limit reached - this is normal and will reset automatically`);
+        } else {
+          console.error(`Failed to fetch content from ${platform}:`, error);
+        }
       }
     }
 
@@ -175,6 +179,10 @@ class ContentFetcherService {
     const data = await response.json();
 
     if (!response.ok) {
+      if (response.status === 429 || (data.error && data.error.includes('rate limit'))) {
+        console.warn('⏰ Twitter API rate limit reached. This is normal and will reset automatically.');
+        throw new Error('Twitter API rate limit exceeded');
+      }
       throw new Error(`Twitter content fetch error: ${data.error || data.details}`);
     }
 
@@ -183,25 +191,42 @@ class ContentFetcherService {
 
   // LinkedIn content fetching (server-side to avoid CORS)
   private async fetchLinkedInContent(credentials: PlatformCredentials, options: ContentFetchOptions): Promise<SocialContent[]> {
+    // Skip LinkedIn if we've had recent failures to prevent spam
+    const failureKey = `linkedin_failure_${credentials.userId}`;
+    const lastFailure = localStorage.getItem(failureKey);
+    if (lastFailure) {
+      const failureTime = parseInt(lastFailure);
+      const timeSinceFailure = Date.now() - failureTime;
+      // Skip for 5 minutes after a failure
+      if (timeSinceFailure < 5 * 60 * 1000) {
+        console.log(`⏸️ Skipping LinkedIn fetch due to recent failure (${Math.round(timeSinceFailure / 1000)}s ago)`);
+        return [];
+      }
+    }
+
     console.log(`🔄 Fetching LinkedIn content via server for user: ${credentials.userId}`);
     
-    const response = await fetch(
-      `http://localhost:3002/api/linkedin/content?userId=${credentials.userId}&accessToken=${credentials.accessToken}&limit=${options.limit || 25}`
-    );
+    try {
+      const response = await fetch(
+        `http://localhost:3002/api/linkedin/content?userId=${credentials.userId}&accessToken=${credentials.accessToken}&limit=${options.limit || 25}`
+      );
 
-    const data = await response.json();
+      const data = await response.json();
 
-    if (!response.ok) {
-      throw new Error(`LinkedIn API error: ${data.error || data.details || 'Unknown error'}`);
+      if (!response.ok) {
+        // Store failure timestamp to prevent repeated attempts
+        localStorage.setItem(failureKey, Date.now().toString());
+        throw new Error(`LinkedIn API error: ${data.error || data.details || 'Unknown error'}`);
+      }
+
+      // Clear failure timestamp on success
+      localStorage.removeItem(failureKey);
+      return data.posts?.map((post: any) => this.transformLinkedInPost(post)) || [];
+    } catch (error) {
+      // Store failure timestamp
+      localStorage.setItem(failureKey, Date.now().toString());
+      throw error;
     }
-
-    console.log(`✅ Received ${data.posts?.length || 0} LinkedIn posts from server (API: ${data.apiUsed || 'Unknown'})`);
-    
-    if (data.debug) {
-      console.log(`🔍 LinkedIn API Debug:`, data.debug);
-    }
-    
-    return (data.posts || []).map((post: any) => this.transformLinkedInPost(post));
   }
 
   // YouTube content fetching
@@ -728,6 +753,44 @@ class ContentFetcherService {
       contentType: 'video',
       rawData: video
     };
+  }
+
+  // Reply to a Twitter tweet
+  async replyToTweet(tweetId: string, replyText: string): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const credentials = platformAuth.getStoredCredentials('twitter');
+      if (!credentials) {
+        throw new Error('Twitter not connected. Please connect your Twitter account first.');
+      }
+
+      console.log(`📝 Posting reply to tweet ${tweetId}: "${replyText}"`);
+
+      const response = await fetch('http://localhost:3002/api/twitter/reply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userId: credentials.userId,
+          accessToken: credentials.accessToken,
+          tweetId: tweetId,
+          replyText: replyText
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.details || data.error || 'Failed to post reply');
+      }
+
+      console.log(`✅ Reply posted successfully:`, data.data?.id);
+      return { success: true, data: data.data };
+
+    } catch (error) {
+      console.error('❌ Error posting Twitter reply:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
   }
 }
 

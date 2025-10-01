@@ -29,6 +29,7 @@ import { FaUser, FaSignOutAlt, FaCog, FaSignInAlt } from 'react-icons/fa';
 import Sidebar from './Sidebar';
 import LoginModal from './components/LoginModal';
 import { userManagementService, User } from './services/userManagementService';
+import ErrorBoundary from './components/ErrorBoundary';
 
 // Lazy load components for better performance
 const AnalyticsSection = lazy(() => import('./AnalyticsSection'));
@@ -177,9 +178,15 @@ function App() {
         );
       case 'moderation':
         return (
-          <Suspense fallback={LoadingSpinner}>
-            <SocialModerationSection />
-          </Suspense>
+          <ErrorBoundary
+            onError={(error, errorInfo) => {
+              console.error('Social Moderation Section crashed:', error, errorInfo);
+            }}
+          >
+            <Suspense fallback={LoadingSpinner}>
+              <SocialModerationSection />
+            </Suspense>
+          </ErrorBoundary>
         );
       case 'platform-testing':
         return (

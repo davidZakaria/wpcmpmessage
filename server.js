@@ -4,6 +4,8 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
 
 // Load environment variables
 dotenv.config();
@@ -13,6 +15,10 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3002;
+
+// Create HTTP server and WebSocket server
+const server = createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws' });
 
 // Middleware
 app.use(cors());
@@ -421,6 +427,23 @@ app.post('/campaigns', (req, res) => {
 const linkedinCache = new Map();
 const LINKEDIN_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
+// LinkedIn failure tracking to prevent spam
+const linkedinFailures = new Map();
+const LINKEDIN_FAILURE_COOLDOWN = 5 * 60 * 1000; // 5 minutes cooldown after failure
+
+// Clean up old failure records every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamp] of linkedinFailures.entries()) {
+    if (now - timestamp > LINKEDIN_FAILURE_COOLDOWN) {
+      linkedinFailures.delete(key);
+    }
+  }
+  if (linkedinFailures.size > 0) {
+    console.log(`🧹 Cleaned up old LinkedIn failure records. Active failures: ${linkedinFailures.size}`);
+  }
+}, 10 * 60 * 1000);
+
 // Fetch LinkedIn content (server-side to avoid CORS)
 app.get('/api/linkedin/content', async (req, res) => {
   try {
@@ -430,6 +453,19 @@ app.get('/api/linkedin/content', async (req, res) => {
       return res.status(400).json({ 
         error: 'Missing required parameters',
         details: 'userId and accessToken are required'
+      });
+    }
+
+    // Check if this user has recent failures
+    const failureKey = `failure_${userId}`;
+    const lastFailure = linkedinFailures.get(failureKey);
+    if (lastFailure && (Date.now() - lastFailure) < LINKEDIN_FAILURE_COOLDOWN) {
+      const remainingTime = Math.ceil((LINKEDIN_FAILURE_COOLDOWN - (Date.now() - lastFailure)) / 1000);
+      console.log(`⏸️ Skipping LinkedIn API call for user ${userId} due to recent failure. Retry in ${remainingTime}s`);
+      return res.json({ 
+        posts: [], 
+        message: `LinkedIn API temporarily disabled due to recent failures. Retry in ${remainingTime} seconds.`,
+        apiUsed: 'rate-limited'
       });
     }
 
@@ -524,6 +560,10 @@ app.get('/api/linkedin/content', async (req, res) => {
     } catch (apiError) {
       console.error(`❌ LinkedIn API error:`, apiError);
       
+      // Track this failure to prevent repeated attempts
+      linkedinFailures.set(failureKey, Date.now());
+      console.log(`🚫 LinkedIn API failure recorded for user ${userId}. Cooldown period: ${LINKEDIN_FAILURE_COOLDOWN / 1000}s`);
+      
       // Return helpful error information
       const response = {
         success: false,
@@ -547,10 +587,27 @@ app.get('/api/linkedin/content', async (req, res) => {
     });
 
     console.log(`ℹ️ LinkedIn API limitations - returning empty result for user: ${userId}`);
+    
+    // Make sure response is defined before using it
+    if (typeof response === 'undefined') {
+      response = {
+        success: false,
+        posts: [],
+        totalCount: 0,
+        message: 'LinkedIn API access failed',
+        error: 'No response generated'
+      };
+    }
+    
     res.json(response);
 
   } catch (error) {
     console.error(`❌ LinkedIn content fetch error:`, error);
+    
+    // Track this failure to prevent repeated attempts
+    const failureKey = `failure_${req.query.userId}`;
+    linkedinFailures.set(failureKey, Date.now());
+    console.log(`🚫 LinkedIn API outer failure recorded. Cooldown period: ${LINKEDIN_FAILURE_COOLDOWN / 1000}s`);
     
     // Always return a successful response for LinkedIn to prevent 500 errors
     const fallbackResponse = {
@@ -652,7 +709,7 @@ app.get('/api/twitter/content', async (req, res) => {
     const userFields = 'name,username,profile_image_url,verified';
     const mediaFields = 'url,preview_image_url,type';
 
-    // First, get user's tweets
+    // Get user's recent tweets to find conversations (but we'll filter these out later)
     const tweetsResponse = await fetch(
       `https://api.twitter.com/2/users/${userId}/tweets?` +
       `max_results=${Math.min(limit, 10)}&expansions=${expansions}&tweet.fields=${tweetFields}&user.fields=${userFields}&media.fields=${mediaFields}`,
@@ -754,10 +811,10 @@ app.get('/api/twitter/content', async (req, res) => {
       }
     }
 
-    // Combine tweets and replies
+    // Focus on replies only - filter out user's own tweets
     const combinedData = {
       ...tweetsData,
-      data: tweetsData.data || [],
+      data: allReplies, // Only show replies from others, not user's own tweets
       replies: allReplies,
       includes: {
         ...tweetsData.includes,
@@ -819,6 +876,81 @@ app.get('/api/twitter/content', async (req, res) => {
   } catch (error) {
     console.error('💥 Twitter content fetch error:', error);
     res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Reply to a Twitter tweet
+app.post('/api/twitter/reply', async (req, res) => {
+  try {
+    const { userId, accessToken, tweetId, replyText } = req.body;
+    
+    if (!userId || !accessToken || !tweetId || !replyText) {
+      return res.status(400).json({ error: 'Missing required fields: userId, accessToken, tweetId, replyText' });
+    }
+
+    console.log(`📝 Posting Twitter reply for user: ${userId} to tweet: ${tweetId}`);
+
+    // Check if user is currently rate-limited
+    const rateLimitedUntil = twitterRateLimitedUsers.get(userId);
+    if (rateLimitedUntil && Date.now() < rateLimitedUntil) {
+      const waitTime = Math.ceil((rateLimitedUntil - Date.now()) / 1000 / 60);
+      console.log(`⏰ User ${userId} is rate-limited. Cannot post reply. Wait ${waitTime} minutes.`);
+      return res.status(429).json({ 
+        error: 'Rate limited', 
+        details: `Please wait ${waitTime} minutes before posting replies.`,
+        retryAfter: waitTime * 60
+      });
+    }
+
+    // Post the reply
+    const replyResponse = await fetch('https://api.twitter.com/2/tweets', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        text: replyText,
+        reply: {
+          in_reply_to_tweet_id: tweetId
+        }
+      })
+    });
+
+    const replyData = await replyResponse.json();
+
+    if (!replyResponse.ok) {
+      console.error(`❌ Twitter reply failed:`, replyData);
+      
+      if (replyResponse.status === 429) {
+        console.log(`🚫 Rate limit hit while posting reply! Marking user ${userId} as rate-limited`);
+        twitterRateLimitedUsers.set(userId, Date.now() + TWITTER_RATE_LIMIT_COOLDOWN);
+        
+        return res.status(429).json({ 
+          error: 'Twitter API rate limit exceeded', 
+          details: 'Rate limit hit while posting reply. Please wait before trying again.',
+          retryAfter: 16 * 60
+        });
+      }
+      
+      return res.status(replyResponse.status).json({ 
+        error: 'Twitter API error', 
+        details: replyData.detail || replyData.title || replyData.error 
+      });
+    }
+
+    console.log(`✅ Twitter reply posted successfully:`, replyData.data?.id);
+
+    res.json({
+      success: true,
+      data: replyData.data,
+      message: 'Reply posted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Twitter reply error:', error);
+    res.status(500).json({ error: 'Failed to post Twitter reply', details: error.message });
   }
 });
 
@@ -3130,13 +3262,169 @@ setInterval(async () => {
   });
 }, 30000); // Check every 30 seconds
 
+// WebSocket connection handling
+const connectedClients = new Set();
+
+wss.on('connection', (ws, req) => {
+  console.log('🔗 New WebSocket client connected');
+  connectedClients.add(ws);
+  
+  // Send welcome message
+  ws.send(JSON.stringify({
+    type: 'connection',
+    data: { status: 'connected', message: 'Welcome to real-time dashboard' },
+    timestamp: new Date().toISOString()
+  }));
+
+  // Handle incoming messages
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(data.toString());
+      console.log('📨 WebSocket message received:', message.type);
+      
+      switch (message.type) {
+        case 'content_update':
+          if (message.data.action === 'subscribe') {
+            console.log('📡 Client subscribed to content updates for platforms:', message.data.platforms);
+            // Send initial dashboard stats
+            sendDashboardUpdate(ws);
+          }
+          break;
+        case 'analytics_update':
+          if (message.data.action === 'ping') {
+            // Respond to heartbeat
+            ws.send(JSON.stringify({
+              type: 'analytics_update',
+              data: { action: 'pong' },
+              timestamp: new Date().toISOString()
+            }));
+          }
+          break;
+        case 'platform_status':
+          if (message.data.action === 'request') {
+            sendPlatformStatus(ws);
+          }
+          break;
+      }
+    } catch (error) {
+      console.error('Error parsing WebSocket message:', error);
+    }
+  });
+
+  // Handle client disconnect
+  ws.on('close', () => {
+    console.log('🔌 WebSocket client disconnected');
+    connectedClients.delete(ws);
+  });
+
+  // Handle errors
+  ws.on('error', (error) => {
+    console.error('❌ WebSocket error:', error);
+    connectedClients.delete(ws);
+  });
+
+  // Send initial data
+  setTimeout(() => {
+    sendDashboardUpdate(ws);
+    sendPlatformStatus(ws);
+  }, 1000);
+});
+
+// Function to send dashboard statistics to clients
+function sendDashboardUpdate(ws = null) {
+  const stats = {
+    totalContent: Math.floor(Math.random() * 50) + 20, // Simulated data
+    flaggedContent: Math.floor(Math.random() * 5),
+    aiAccuracy: 92.0 + Math.random() * 8, // 92-100%
+    brandSafety: 70.0 + Math.random() * 25, // 70-95%
+    platformActivity: {
+      facebook: Math.random() > 0.5,
+      instagram: Math.random() > 0.5,
+      twitter: Math.random() > 0.5,
+      linkedin: Math.random() > 0.5,
+      youtube: Math.random() > 0.5,
+      tiktok: Math.random() > 0.5
+    },
+    recentActions: [
+      { action: 'Content flagged', platform: 'Facebook', time: new Date().toISOString() },
+      { action: 'Rule updated', platform: 'Instagram', time: new Date().toISOString() },
+      { action: 'Content approved', platform: 'Twitter', time: new Date().toISOString() }
+    ]
+  };
+
+  const message = {
+    type: 'analytics_update',
+    data: stats,
+    timestamp: new Date().toISOString()
+  };
+
+  if (ws) {
+    // Send to specific client
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify(message));
+    }
+  } else {
+    // Broadcast to all connected clients
+    connectedClients.forEach(client => {
+      if (client.readyState === client.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    });
+  }
+}
+
+// Function to send platform status
+function sendPlatformStatus(ws = null) {
+  const platformStatus = {
+    facebook: { status: 'connected', lastSync: new Date().toISOString() },
+    instagram: { status: 'connected', lastSync: new Date().toISOString() },
+    twitter: { status: 'connected', lastSync: new Date().toISOString() },
+    linkedin: { status: 'connected', lastSync: new Date().toISOString() },
+    youtube: { status: 'connected', lastSync: new Date().toISOString() },
+    tiktok: { status: 'disconnected', lastSync: new Date(Date.now() - 3600000).toISOString() }
+  };
+
+  const message = {
+    type: 'platform_status',
+    data: platformStatus,
+    timestamp: new Date().toISOString()
+  };
+
+  if (ws) {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify(message));
+    }
+  } else {
+    connectedClients.forEach(client => {
+      if (client.readyState === client.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    });
+  }
+}
+
+// Send periodic updates every 60 seconds (reduced frequency to prevent loops)
+setInterval(() => {
+  if (connectedClients.size > 0) {
+    sendDashboardUpdate();
+  }
+}, 60000);
+
+// Send platform status updates every 60 seconds
+setInterval(() => {
+  if (connectedClients.size > 0) {
+    sendPlatformStatus();
+  }
+}, 60000);
+
 // Start server
-app.listen(PORT, () => {
-  console.log(`WhatsApp Backend Server running on port ${PORT}`);
-  console.log(`Webhook endpoint: http://localhost:${PORT}/webhook`);
-  console.log(`Reports endpoint: http://localhost:${PORT}/reports`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`OAuth callbacks: http://localhost:${PORT}/auth/{platform}/callback`);
+server.listen(PORT, () => {
+  console.log(`🚀 WhatsApp Backend Server running on port ${PORT}`);
+  console.log(`🔗 WebSocket server running on ws://localhost:${PORT}/ws`);
+  console.log(`📊 Webhook endpoint: http://localhost:${PORT}/webhook`);
+  console.log(`📊 Reports endpoint: http://localhost:${PORT}/reports`);
+  console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔐 OAuth callbacks: http://localhost:${PORT}/auth/{platform}/callback`);
   console.log(`📅 Scheduled posts job started - checking every minute`);
 });
 

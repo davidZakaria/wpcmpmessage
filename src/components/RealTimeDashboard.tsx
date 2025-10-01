@@ -2,6 +2,7 @@
 // Shows live statistics and updates
 
 import React, { useState, useEffect } from 'react';
+import { useWebSocket } from '../services/websocketService';
 import {
   Box,
   Grid,
@@ -63,18 +64,57 @@ interface DashboardStats {
 
 interface RealTimeDashboardProps {
   stats: DashboardStats;
-  isConnected: boolean;
   onRefresh?: () => void;
 }
 
 const RealTimeDashboard: React.FC<RealTimeDashboardProps> = ({ 
-  stats, 
-  isConnected, 
+  stats: initialStats, 
   onRefresh 
 }) => {
+  const { connectionStatus, lastMessage, subscribe } = useWebSocket();
+  const [stats, setStats] = useState(initialStats);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const cardBg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
+
+  const isConnected = connectionStatus === 'connected';
+
+  // Subscribe to real-time updates when component mounts
+  useEffect(() => {
+    if (isConnected) {
+      subscribe(['facebook', 'instagram', 'twitter', 'linkedin', 'youtube', 'tiktok']);
+    }
+  }, [isConnected, subscribe]);
+
+  // Handle incoming WebSocket messages
+  useEffect(() => {
+    if (lastMessage && lastMessage.type === 'analytics_update') {
+      const data = lastMessage.data;
+      
+      // Update stats with real-time data
+      if (data.totalContent !== undefined) {
+        setStats(prevStats => ({
+          ...prevStats,
+          totalContent: data.totalContent || prevStats.totalContent,
+          flaggedContent: data.flaggedContent || prevStats.flaggedContent,
+          avgBrandSafety: (data.brandSafety || prevStats.avgBrandSafety * 100) / 100,
+          aiPerformance: {
+            ...prevStats.aiPerformance,
+            accuracy: (data.aiAccuracy || prevStats.aiPerformance.accuracy * 100) / 100
+          },
+          platformActivity: data.platformActivity || prevStats.platformActivity,
+          recentActivity: data.recentActions ? data.recentActions.map((action: any) => ({
+            id: Math.random().toString(36).substr(2, 9),
+            action: action.action,
+            platform: action.platform,
+            timestamp: new Date(action.time),
+            severity: 'medium'
+          })) : prevStats.recentActivity
+        }));
+        setLastUpdate(new Date());
+      }
+    }
+  }, [lastMessage]);
 
   useEffect(() => {
     setLastUpdate(new Date());

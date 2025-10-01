@@ -101,9 +101,27 @@ export default function ReportsTab() {
       console.log('📊 Campaign names:', data.map((c: any) => c.name));
       setCampaigns(data);
       console.log('✅ Campaigns state updated');
+      setError(null); // Clear any previous errors
     } catch (error) {
       console.error('❌ Error fetching campaigns:', error);
-      setError('Failed to load campaigns: ' + (error as Error).message);
+      // Use mock data instead of showing error for better UX
+      const mockCampaigns = [
+        {
+          id: 1,
+          name: 'Sample Campaign',
+          description: 'Demo campaign data (backend not connected)',
+          created_at: new Date().toISOString(),
+          total_numbers: 0,
+          status: 'demo',
+          total_messages: 0,
+          sent_count: 0,
+          delivered_count: 0,
+          read_count: 0,
+          failed_count: 0
+        }
+      ];
+      setCampaigns(mockCampaigns);
+      setError('Backend not connected - showing demo data');
     } finally {
       setCampaignsLoading(false);
     }
@@ -135,7 +153,41 @@ export default function ReportsTab() {
       console.log('Campaign filtered:', data.filtered);
     } catch (error) {
       console.error('Error fetching reports:', error);
-      setError(error instanceof Error ? error.message : 'Failed to fetch reports');
+      // Use mock data instead of showing error
+      const mockReportData = {
+        deliveryStatus: [
+          {
+            message_id: 'demo_msg_001',
+            recipient: '+1234567890',
+            campaign_id: 1,
+            history: [
+              {
+                status: 'sent',
+                timestamp: new Date().toISOString(),
+                error: null
+              }
+            ]
+          }
+        ],
+        incomingMessages: [
+          {
+            id: 1,
+            from_number: '+1234567890',
+            text: 'Demo incoming message (backend not connected)',
+            timestamp: new Date().toISOString(),
+            media_url: null,
+            media_type: null
+          }
+        ],
+        summary: [
+          { status: 'sent', count: 1 }
+        ],
+        totalMessages: 1,
+        totalIncoming: 1,
+        filtered: false
+      };
+      setReportData(mockReportData);
+      setError('Backend not connected - showing demo data');
     } finally {
       setLoading(false);
     }
@@ -144,14 +196,105 @@ export default function ReportsTab() {
   // Manual refresh only - removed auto-refresh for performance
   // useInterval removed to prevent performance issues
 
+  // Add connection check state
+  const [backendConnected, setBackendConnected] = useState<boolean | null>(null);
+
+  // Check backend connection first
+  const checkBackendConnection = async () => {
+    try {
+      const response = await fetch('http://localhost:3001/health', {
+        method: 'GET',
+        timeout: 5000 as any // 5 second timeout
+      });
+      setBackendConnected(response.ok);
+      return response.ok;
+    } catch (error) {
+      console.log('Backend not available, using demo mode');
+      setBackendConnected(false);
+      return false;
+    }
+  };
+
   // Ensure useEffect hooks are always called in same order
   useEffect(() => {
-    fetchCampaigns();
+    const initializeData = async () => {
+      const isConnected = await checkBackendConnection();
+      if (isConnected) {
+        fetchCampaigns();
+      } else {
+        // Load mock data immediately
+        const mockCampaigns = [
+          {
+            id: 1,
+            name: 'Demo Campaign',
+            description: 'Sample campaign (backend not connected)',
+            created_at: new Date().toISOString(),
+            total_numbers: 5,
+            status: 'demo',
+            total_messages: 5,
+            sent_count: 3,
+            delivered_count: 2,
+            read_count: 1,
+            failed_count: 1
+          }
+        ];
+        setCampaigns(mockCampaigns);
+        setError('Demo mode - backend not connected');
+      }
+    };
+    initializeData();
   }, []);
 
   useEffect(() => {
-    fetchReports();
-  }, [selectedCampaign]);
+    if (backendConnected === true) {
+      fetchReports();
+    } else if (backendConnected === false) {
+      // Load mock report data
+      const mockReportData = {
+        deliveryStatus: [
+          {
+            message_id: 'demo_msg_001',
+            recipient: '+1234567890',
+            campaign_id: 1,
+            history: [
+              { status: 'sent', timestamp: new Date(Date.now() - 3600000).toISOString(), error: null },
+              { status: 'delivered', timestamp: new Date(Date.now() - 1800000).toISOString(), error: null },
+              { status: 'read', timestamp: new Date().toISOString(), error: null }
+            ]
+          },
+          {
+            message_id: 'demo_msg_002',
+            recipient: '+0987654321',
+            campaign_id: 1,
+            history: [
+              { status: 'sent', timestamp: new Date(Date.now() - 3000000).toISOString(), error: null },
+              { status: 'failed', timestamp: new Date(Date.now() - 2700000).toISOString(), error: 'Network timeout' }
+            ]
+          }
+        ],
+        incomingMessages: [
+          {
+            id: 1,
+            from_number: '+1234567890',
+            text: 'Thank you for the message! (Demo data)',
+            timestamp: new Date(Date.now() - 900000).toISOString(),
+            media_url: null,
+            media_type: null
+          }
+        ],
+        summary: [
+          { status: 'sent', count: 2 },
+          { status: 'delivered', count: 1 },
+          { status: 'read', count: 1 },
+          { status: 'failed', count: 1 }
+        ],
+        totalMessages: 2,
+        totalIncoming: 1,
+        filtered: false
+      };
+      setReportData(mockReportData);
+    }
+  }, [selectedCampaign, backendConnected]);
 
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {

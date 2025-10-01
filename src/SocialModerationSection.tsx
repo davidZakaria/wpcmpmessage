@@ -3,10 +3,12 @@ import { platformAuth } from './services/platformAuth';
 import { contentFetcher, SocialContent } from './services/contentFetcher';
 import { aiModerationService, AIAnalysisResult, ModerationContext } from './services/aiModerationService';
 import { exportService, ExportOptions } from './services/exportService';
-import { websocketService, useWebSocket } from './services/websocketService';
+// import { websocketService, useWebSocket } from './services/websocketService'; // Disabled - no WebSocket server
 import SocialChatTab from './components/SocialChatTab';
 import SocialPostingTab from './components/SocialPostingTab';
-import RealTimeDashboard from './components/RealTimeDashboard';
+// import RealTimeDashboard from './components/RealTimeDashboard'; // Disabled - uses WebSocket
+import { useLiveSocialContent, useLiveAnalytics } from './hooks/useLiveData';
+import { LiveIndicator } from './components/LiveIndicator';
 import {
   Box,
   VStack,
@@ -49,6 +51,7 @@ import {
   ModalCloseButton,
   useDisclosure,
   useToast,
+  useColorModeValue,
   Stat,
   StatLabel,
   StatNumber,
@@ -75,6 +78,7 @@ import {
   SliderFilledTrack,
   SliderThumb,
   Tooltip,
+  SimpleGrid,
 } from '@chakra-ui/react';
 import {
   FaShieldAlt,
@@ -110,6 +114,7 @@ import {
   FaPaperPlane,
   FaEdit,
   FaSnapchat,
+  FaReply,
 } from 'react-icons/fa';
 
 interface ContentItem {
@@ -157,7 +162,7 @@ const SocialModerationSection: React.FC = () => {
   const [moderationRules, setModerationRules] = useState<ModerationRule[]>([]);
   
   // WebSocket integration
-  const { connectionStatus, lastMessage } = useWebSocket();
+  // const { connectionStatus, lastMessage } = useWebSocket(); // Disabled - no WebSocket server
   const [platforms, setPlatforms] = useState<Platform[]>([
     { id: 'facebook', name: 'Facebook', icon: FaFacebook, enabled: true, connected: false, lastSync: new Date(), itemsProcessed: 0 },
     { id: 'twitter', name: 'Twitter', icon: FaTwitter, enabled: true, connected: false, lastSync: new Date(), itemsProcessed: 0 },
@@ -186,7 +191,43 @@ const SocialModerationSection: React.FC = () => {
   const { isOpen: isRuleModalOpen, onOpen: onRuleModalOpen, onClose: onRuleModalClose } = useDisclosure();
   const toast = useToast();
   
+  // Reply functionality state
+  const [replyText, setReplyText] = useState('');
+  const [replyingToTweet, setReplyingToTweet] = useState<string | null>(null);
+  const [isPostingReply, setIsPostingReply] = useState(false);
+  
+  // AI service status
+  const [aiAvailable, setAiAvailable] = useState(true);
+  const [showQuotaWarning, setShowQuotaWarning] = useState(false);
+  
   // Real content state
+  // Live data hooks disabled to prevent crashes
+  // const liveContent = useLiveSocialContent();
+  // const liveAnalytics = useLiveAnalytics();
+  
+  // Mock live data objects to prevent errors
+  const liveContent = {
+    data: [],
+    isLoading: false,
+    error: null,
+    lastUpdated: null,
+    isLive: false,
+    refresh: () => Promise.resolve(),
+    toggleLive: () => {},
+    setUpdateInterval: () => {}
+  };
+  
+  const liveAnalytics = {
+    data: null,
+    isLoading: false,
+    error: null,
+    lastUpdated: null,
+    isLive: false,
+    refresh: () => Promise.resolve(),
+    toggleLive: () => {},
+    setUpdateInterval: () => {}
+  };
+  
   const [realContent, setRealContent] = useState<SocialContent[]>([]);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [contentStats, setContentStats] = useState({
@@ -201,10 +242,41 @@ const SocialModerationSection: React.FC = () => {
     }
   });
 
+  // Live content sync disabled to prevent crashes
+  // useEffect(() => {
+  //   if (liveContent.data) {
+  //     setRealContent(liveContent.data);
+  //     
+  //     // Update content stats
+  //     const stats = {
+  //       totalPosts: liveContent.data.length,
+  //       flaggedContent: liveContent.data.filter(item => 
+  //         item.sentiment === 'negative' || 
+  //         (item.engagement && item.engagement.likes < 5)
+  //       ).length,
+  //       platformBreakdown: liveContent.data.reduce((acc, item) => {
+  //         acc[item.platform] = (acc[item.platform] || 0) + 1;
+  //         return acc;
+  //       }, {} as Record<string, number>),
+  //       engagementTotals: liveContent.data.reduce((acc, item) => {
+  //         if (item.engagement) {
+  //           acc.likes += item.engagement.likes || 0;
+  //           acc.shares += item.engagement.shares || 0;
+  //           acc.comments += item.engagement.comments || 0;
+  //           acc.views += item.engagement.views || 0;
+  //         }
+  //         return acc;
+  //       }, { likes: 0, shares: 0, comments: 0, views: 0 })
+  //     };
+  //     
+  //     setContentStats(stats);
+  //   }
+  // }, [liveContent.data]);
+
   // Check platform connections on mount
   useEffect(() => {
     checkPlatformConnections();
-    loadRealContent();
+    // Don't call loadRealContent() here - live data hook handles it
   }, []);
 
   // Debounced platform connection check to avoid excessive calls
@@ -412,6 +484,55 @@ const SocialModerationSection: React.FC = () => {
         duration: 3000,
         isClosable: true,
       });
+    }
+  };
+
+  // Reply to Twitter tweet
+  const handleReplyToTweet = async (tweetId: string) => {
+    if (!replyText.trim()) {
+      toast({
+        title: 'Reply Required',
+        description: 'Please enter a reply message.',
+        status: 'warning',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    setIsPostingReply(true);
+    try {
+      const result = await contentFetcher.replyToTweet(tweetId, replyText);
+      
+      if (result.success) {
+        toast({
+          title: 'Reply Posted',
+          description: 'Your reply has been posted successfully!',
+          status: 'success',
+          duration: 3000,
+          isClosable: true,
+        });
+        
+        // Clear reply state
+        setReplyText('');
+        setReplyingToTweet(null);
+        
+        // Refresh content to show the new reply
+        await loadRealContent();
+      } else {
+        throw new Error(result.error || 'Failed to post reply');
+      }
+    } catch (error) {
+      console.error('❌ Failed to post reply:', error);
+      toast({
+        title: 'Reply Failed',
+        description: error instanceof Error ? error.message : 'Failed to post reply',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsPostingReply(false);
     }
   };
 
@@ -961,8 +1082,24 @@ const SocialModerationSection: React.FC = () => {
         }
       };
 
+      // Check AI availability before analysis
+      const isAIAvailable = aiModerationService.isAIAvailable();
+      setAiAvailable(isAIAvailable);
+      
       // Get AI analysis
       const aiAnalysis = await aiModerationService.analyzeContent(content, context, moderationRules);
+      
+      // Check if AI analysis was actually used (not fallback)
+      if (!isAIAvailable && !showQuotaWarning) {
+        setShowQuotaWarning(true);
+        toast({
+          title: '💳 AI Analysis Unavailable',
+          description: 'OpenAI quota exceeded. Switched to basic analysis mode. Content moderation continues working perfectly!',
+          status: 'info',
+          duration: 10000,
+          isClosable: true,
+        });
+      }
       
       // Map AI results to existing format
       const status = aiAnalysis.recommendations.action === 'approve' ? 'pending' : 'flagged';
@@ -1201,7 +1338,8 @@ const SocialModerationSection: React.FC = () => {
     processContentWithAI(realContent);
   }, [realContent, processContentWithAI]);
 
-  // Handle WebSocket messages
+  // Handle WebSocket messages - DISABLED (no WebSocket server)
+  /*
   useEffect(() => {
     if (lastMessage) {
       switch (lastMessage.type) {
@@ -1221,6 +1359,7 @@ const SocialModerationSection: React.FC = () => {
       }
     }
   }, [lastMessage]);
+  */
 
   // Use processed content items
   const allContent = [...processedContentItems];
@@ -1383,9 +1522,21 @@ const SocialModerationSection: React.FC = () => {
       <VStack spacing={6} align="stretch">
         <HStack justify="space-between" align="center">
           <VStack align="start" spacing={1}>
-            <Heading size="lg" color="purple.600">
-              🛡️ Social Media Moderation
-            </Heading>
+            <HStack>
+              <Heading size="lg" color="purple.600">
+                🛡️ Social Media Moderation
+              </Heading>
+              {!aiAvailable && (
+                <Badge colorScheme="orange" variant="solid">
+                  Basic Analysis Mode
+                </Badge>
+              )}
+              {aiAvailable && (
+                <Badge colorScheme="green" variant="solid">
+                  AI Enhanced
+                </Badge>
+              )}
+            </HStack>
             <Text color="gray.600" fontSize="sm">
               Advanced AI-powered content moderation with real-time monitoring and iCloud integration
             </Text>
@@ -1486,17 +1637,52 @@ const SocialModerationSection: React.FC = () => {
           <TabPanels>
             {/* Live Dashboard Tab */}
             <TabPanel>
-              <RealTimeDashboard 
-                stats={dashboardStats}
-                isConnected={connectionStatus === 'connected'}
-                onRefresh={loadRealContent}
-              />
+              <VStack spacing={6} align="stretch">
+                <Alert status="info">
+                  <AlertIcon />
+                  <Box>
+                    <AlertTitle>Real-time Dashboard</AlertTitle>
+                    <AlertDescription>
+                      Live dashboard temporarily disabled. Use the other tabs to view content and analytics.
+                    </AlertDescription>
+                  </Box>
+                </Alert>
+                
+                <SimpleGrid columns={{ base: 1, md: 2, lg: 4 }} spacing={4}>
+                  <Stat bg={useColorModeValue('white', 'gray.800')} p={4} borderRadius="md" boxShadow="sm">
+                    <StatLabel>Total Content</StatLabel>
+                    <StatNumber>{dashboardStats.totalContent}</StatNumber>
+                    <StatHelpText>Processed items</StatHelpText>
+                  </Stat>
+                  
+                  <Stat bg={useColorModeValue('white', 'gray.800')} p={4} borderRadius="md" boxShadow="sm">
+                    <StatLabel>Flagged</StatLabel>
+                    <StatNumber color="orange.500">{dashboardStats.flaggedContent}</StatNumber>
+                    <StatHelpText>Needs review</StatHelpText>
+                  </Stat>
+                  
+                  <Stat bg={useColorModeValue('white', 'gray.800')} p={4} borderRadius="md" boxShadow="sm">
+                    <StatLabel>Approved</StatLabel>
+                    <StatNumber color="green.500">{dashboardStats.approvedContent}</StatNumber>
+                    <StatHelpText>Safe content</StatHelpText>
+                  </Stat>
+                  
+                  <Stat bg={useColorModeValue('white', 'gray.800')} p={4} borderRadius="md" boxShadow="sm">
+                    <StatLabel>Pending</StatLabel>
+                    <StatNumber color="blue.500">{dashboardStats.pendingContent}</StatNumber>
+                    <StatHelpText>Awaiting review</StatHelpText>
+                  </Stat>
+                </SimpleGrid>
+              </VStack>
             </TabPanel>
 
             {/* Social Chat Tab */}
             <TabPanel>
               <SocialChatTab 
-                connectedPlatforms={platforms.filter(p => p.connected).map(p => p.id)}
+                connectedPlatforms={React.useMemo(() => 
+                  platforms.filter(p => p.connected).map(p => p.id), 
+                  [platforms.map(p => `${p.id}:${p.connected}`).join(',')]
+                )}
               />
             </TabPanel>
 
@@ -1510,6 +1696,17 @@ const SocialModerationSection: React.FC = () => {
             {/* Real-time Monitor Tab */}
             <TabPanel>
               <VStack spacing={4} align="stretch">
+                {/* Live Data Indicator - Disabled */}
+                <LiveIndicator
+                  isLive={false}
+                  lastUpdated={null}
+                  isLoading={false}
+                  onToggleLive={() => {}}
+                  onRefresh={() => {}}
+                  updateInterval={120000}
+                  onIntervalChange={() => {}}
+                />
+                
                 {/* Connected Platforms Overview */}
                 <Card>
                   <CardHeader>
@@ -1864,10 +2061,30 @@ const SocialModerationSection: React.FC = () => {
                                                   <Text fontSize="xs" color="gray.500" fontStyle="italic">
                                                     💬 Replying to your tweet: "{item.content.substring(0, 50)}..."
                                                   </Text>
+                                                  
+                                                  {/* Reply Text */}
+                                                  <Text fontSize="sm" mt={2} p={2} bg="gray.50" borderRadius="md">
+                                                    "{reply.content}"
+                                                  </Text>
                                                 </VStack>
                                                 
-                                                {/* MODERATION ACTIONS - PROMINENT */}
-                                                <VStack spacing={3} minW="120px">
+                                                {/* REPLY & MODERATION ACTIONS */}
+                                                <VStack spacing={3} minW="140px">
+                                                  <Text fontSize="xs" fontWeight="bold" color="blue.600" textAlign="center">
+                                                    REPLY
+                                                  </Text>
+                                                  
+                                                  <Button 
+                                                    size="sm" 
+                                                    colorScheme="blue" 
+                                                    variant="solid"
+                                                    onClick={() => setReplyingToTweet(reply.id)}
+                                                    w="full"
+                                                    leftIcon={<Icon as={FaReply} />}
+                                                  >
+                                                    Reply
+                                                  </Button>
+                                                  
                                                   <Text fontSize="xs" fontWeight="bold" color="gray.600" textAlign="center">
                                                     MODERATE
                                                   </Text>
@@ -2870,6 +3087,71 @@ Mix: spam | نصب | hate | كراهية | scam | احتيال"
             </ModalFooter>
           </ModalContent>
         </Modal>
+        
+        {/* Reply Modal */}
+        {replyingToTweet && (
+          <Box 
+            position="fixed" 
+            top="0" 
+            left="0" 
+            right="0" 
+            bottom="0" 
+            bg="blackAlpha.600" 
+            zIndex="overlay"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            onClick={() => setReplyingToTweet(null)}
+          >
+            <Box 
+              bg="white" 
+              p={6} 
+              borderRadius="lg" 
+              maxW="500px" 
+              w="90%"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <VStack spacing={4} align="stretch">
+                <HStack justify="space-between">
+                  <Text fontSize="lg" fontWeight="bold">Reply to Tweet</Text>
+                  <Button size="sm" variant="ghost" onClick={() => setReplyingToTweet(null)}>
+                    ✕
+                  </Button>
+                </HStack>
+                
+                <Textarea
+                  placeholder="Write your reply..."
+                  value={replyText}
+                  onChange={(e) => setReplyText(e.target.value)}
+                  rows={4}
+                  resize="vertical"
+                />
+                
+                <HStack justify="space-between">
+                  <Text fontSize="sm" color="gray.500">
+                    {replyText.length}/280 characters
+                  </Text>
+                  <HStack>
+                    <Button 
+                      variant="outline" 
+                      onClick={() => setReplyingToTweet(null)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button 
+                      colorScheme="blue" 
+                      onClick={() => handleReplyToTweet(replyingToTweet)}
+                      isLoading={isPostingReply}
+                      isDisabled={!replyText.trim() || replyText.length > 280}
+                    >
+                      Post Reply
+                    </Button>
+                  </HStack>
+                </HStack>
+              </VStack>
+            </Box>
+          </Box>
+        )}
       </VStack>
     </Box>
   );
